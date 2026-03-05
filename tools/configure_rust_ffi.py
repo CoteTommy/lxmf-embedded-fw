@@ -48,6 +48,7 @@ def configure() -> None:
     wifi_password = os.environ.get("LXMF_WIFI_PASSWORD")
     tcp_host = os.environ.get("LXMF_TCP_HOST")
     tcp_port = os.environ.get("LXMF_TCP_PORT")
+    capture_profile = os.environ.get("LXMF_CAPTURE_PROFILE", "").strip().lower()
     if wifi_ssid:
         node_defines.append(("LXMF_WIFI_SSID", env.StringifyMacro(wifi_ssid)))
     if wifi_password:
@@ -56,6 +57,12 @@ def configure() -> None:
         node_defines.append(("LXMF_TCP_HOST", env.StringifyMacro(tcp_host)))
     if tcp_port:
         node_defines.append(("LXMF_TCP_PORT", tcp_port))
+    if capture_profile == "balanced":
+        node_defines.append(("LXMF_CAPTURE_PROFILE_BALANCED", 1))
+    elif capture_profile == "high":
+        node_defines.append(("LXMF_CAPTURE_PROFILE_HIGH", 1))
+    elif capture_profile == "thumbnail":
+        node_defines.append(("LXMF_CAPTURE_PROFILE_THUMBNAIL", 1))
     if node_defines:
         env.Append(CPPDEFINES=node_defines)
         print(f"[lxmf-node] applied env build config defines={node_defines}")

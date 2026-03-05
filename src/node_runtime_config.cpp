@@ -21,8 +21,19 @@ NativeNodeMode default_mode() {
 #endif
 }
 
+NodeCaptureProfile default_capture_profile() {
+#ifdef LXMF_CAPTURE_PROFILE_HIGH
+  return NODE_CAPTURE_PROFILE_HIGH;
+#elif defined(LXMF_CAPTURE_PROFILE_BALANCED)
+  return NODE_CAPTURE_PROFILE_BALANCED;
+#else
+  return NODE_CAPTURE_PROFILE_THUMBNAIL;
+#endif
+}
+
 void apply_compile_time_defaults(NodeRuntimeConfig* config) {
   config->node_mode = default_mode();
+  config->capture_profile = default_capture_profile();
 #ifdef LXMF_WIFI_SSID
   strlcpy(config->wifi_ssid, compile_time_str(LXMF_WIFI_SSID), sizeof(config->wifi_ssid));
 #endif
@@ -59,6 +70,8 @@ bool node_runtime_config_load(NodeRuntimeConfig* config) {
   prefs.getString("wifi_password", config->wifi_password, sizeof(config->wifi_password));
   prefs.getString("tcp_host", config->tcp_host, sizeof(config->tcp_host));
   config->tcp_port = prefs.getUShort("tcp_port", config->tcp_port);
+  config->capture_profile =
+      static_cast<NodeCaptureProfile>(prefs.getUChar("capture_profile", static_cast<uint8_t>(config->capture_profile)));
   prefs.end();
   apply_compile_time_defaults(config);
   return true;
@@ -75,6 +88,7 @@ bool node_runtime_config_save(const NodeRuntimeConfig& config) {
   prefs.putString("wifi_password", config.wifi_password);
   prefs.putString("tcp_host", config.tcp_host);
   prefs.putUShort("tcp_port", config.tcp_port);
+  prefs.putUChar("capture_profile", static_cast<uint8_t>(config.capture_profile));
   prefs.end();
   return true;
 }
@@ -95,6 +109,19 @@ const char* node_runtime_config_mode_name(const NodeRuntimeConfig& config) {
       return "tcp_client";
     case NATIVE_NODE_MODE_TCP_SERVER:
       return "tcp_server";
+    default:
+      return "unknown";
+  }
+}
+
+const char* node_runtime_capture_profile_name(const NodeRuntimeConfig& config) {
+  switch (config.capture_profile) {
+    case NODE_CAPTURE_PROFILE_THUMBNAIL:
+      return "thumbnail";
+    case NODE_CAPTURE_PROFILE_BALANCED:
+      return "balanced";
+    case NODE_CAPTURE_PROFILE_HIGH:
+      return "high";
     default:
       return "unknown";
   }

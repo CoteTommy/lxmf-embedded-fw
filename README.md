@@ -131,11 +131,12 @@ Current configuration sources:
 
 1. persisted `Preferences` namespace `lxmfnode`
 2. optional environment-driven build defines applied by `tools/configure_rust_ffi.py`:
-   - `LXMF_NODE_MODE_TCP_CLIENT=1`
-   - `LXMF_WIFI_SSID=your-ssid`
-   - `LXMF_WIFI_PASSWORD=your-password`
-   - `LXMF_TCP_HOST=host-or-ip`
-   - `LXMF_TCP_PORT=7443`
+ - `LXMF_NODE_MODE_TCP_CLIENT=1`
+ - `LXMF_WIFI_SSID=your-ssid`
+ - `LXMF_WIFI_PASSWORD=your-password`
+ - `LXMF_TCP_HOST=host-or-ip`
+  - `LXMF_TCP_PORT=7443`
+  - `LXMF_CAPTURE_PROFILE=thumbnail|balanced|high`
 
 Recommended local workflow:
 
@@ -163,6 +164,18 @@ pio run -t upload
 ```
 
 BLE remains active for provisioning/recovery while TCP client mode is being brought up.
+
+Capture profiles:
+
+- `thumbnail`
+  - reliability-first
+  - `QQVGA`
+- `balanced`
+  - better image quality for normal TCP use
+  - `QVGA`
+- `high`
+  - higher detail, larger transfers
+  - `VGA` with PSRAM, `QVGA` otherwise
 
 ## Next steps
 

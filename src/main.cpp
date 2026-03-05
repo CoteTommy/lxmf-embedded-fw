@@ -459,16 +459,24 @@ static bool init_camera() {
   config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.fb_location = CAMERA_FB_IN_PSRAM;
-
-  if (psramFound()) {
-    // Prioritize transfer reliability over image quality for BLE transport bring-up.
-    config.frame_size = FRAMESIZE_QQVGA;
-    config.jpeg_quality = 20;
-    config.fb_count = 2;
-  } else {
-    config.frame_size = FRAMESIZE_QQVGA;
-    config.jpeg_quality = 22;
-    config.fb_count = 1;
+  const bool has_psram = psramFound();
+  switch (g_node_config.capture_profile) {
+    case NODE_CAPTURE_PROFILE_HIGH:
+      config.frame_size = has_psram ? FRAMESIZE_VGA : FRAMESIZE_QVGA;
+      config.jpeg_quality = has_psram ? 14 : 16;
+      config.fb_count = has_psram ? 2 : 1;
+      break;
+    case NODE_CAPTURE_PROFILE_BALANCED:
+      config.frame_size = FRAMESIZE_QVGA;
+      config.jpeg_quality = has_psram ? 16 : 18;
+      config.fb_count = has_psram ? 2 : 1;
+      break;
+    case NODE_CAPTURE_PROFILE_THUMBNAIL:
+    default:
+      config.frame_size = FRAMESIZE_QQVGA;
+      config.jpeg_quality = has_psram ? 20 : 22;
+      config.fb_count = has_psram ? 2 : 1;
+      break;
   }
 
   esp_err_t err = esp_camera_init(&config);
@@ -481,7 +489,14 @@ static bool init_camera() {
     sensor->set_brightness(sensor, 0);
     sensor->set_saturation(sensor, 0);
   }
-  Serial.println("[lxmf-cam] camera ready");
+  lxmf_log_eventf("capture",
+                  "camera_ready",
+                  "camera ready profile=%s frame_size=%u jpeg_quality=%u fb_count=%u psram=%s",
+                  node_runtime_capture_profile_name(g_node_config),
+                  static_cast<unsigned>(config.frame_size),
+                  static_cast<unsigned>(config.jpeg_quality),
+                  static_cast<unsigned>(config.fb_count),
+                  has_psram ? "yes" : "no");
   return true;
 }
 
