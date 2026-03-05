@@ -149,6 +149,22 @@ static bool apply_capture_profile(NodeCaptureProfile profile) {
   return true;
 }
 
+static camera_fb_t* capture_frame_for_profile(NodeCaptureProfile profile) {
+  if (!apply_capture_profile(profile)) {
+    return nullptr;
+  }
+
+  // The OV2640 frequently produces a corrupted first frame after a framesize/quality switch.
+  // Throw away one warm-up frame before taking the real capture.
+  camera_fb_t* warmup = esp_camera_fb_get();
+  if (warmup != nullptr) {
+    esp_camera_fb_return(warmup);
+    delay(30);
+  }
+
+  return esp_camera_fb_get();
+}
+
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
     (void)server;
@@ -575,17 +591,7 @@ static void run_capture() {
 static void run_tcp_capture(const TcpCaptureRequest& request) {
   const NodeCaptureProfile effective_profile =
       request.has_override ? request.profile : g_node_config.capture_profile;
-  if (!apply_capture_profile(effective_profile)) {
-    g_diag.drop_invalid++;
-    g_diag.fallback_reason = FALLBACK_CAMERA_ERROR;
-    tcp_node_client_send_capture_result(0x02, 0, 0, 0, 0, effective_profile);
-    lxmf_log_eventf("capture",
-                    "tcp_capture_profile_failed",
-                    "tcp capture profile apply failed profile=%s",
-                    capture_profile_name(effective_profile));
-    return;
-  }
-  camera_fb_t* fb = esp_camera_fb_get();
+  camera_fb_t* fb = capture_frame_for_profile(effective_profile);
   if (fb == nullptr) {
     g_diag.drop_invalid++;
     g_diag.fallback_reason = FALLBACK_CAMERA_ERROR;
