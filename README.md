@@ -136,7 +136,7 @@ Current configuration sources:
  - `LXMF_WIFI_PASSWORD=your-password`
  - `LXMF_TCP_HOST=host-or-ip`
   - `LXMF_TCP_PORT=7443`
-  - `LXMF_CAPTURE_PROFILE=thumbnail|balanced|high`
+  - `LXMF_CAPTURE_PROFILE=thumbnail|balanced|high|very_high`
 
 Recommended local workflow:
 
@@ -174,8 +174,12 @@ Capture profiles:
   - better image quality for normal TCP use
   - `QVGA`
 - `high`
+  - default profile
   - higher detail, larger transfers
   - `VGA` with PSRAM, `QVGA` otherwise
+- `very_high`
+  - pushes resolution/quality above the default
+  - `SVGA` with PSRAM, `VGA` otherwise
 
 ## Next steps
 

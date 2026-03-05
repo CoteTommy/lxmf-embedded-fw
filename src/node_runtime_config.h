@@ -9,6 +9,7 @@ enum NodeCaptureProfile : uint8_t {
   NODE_CAPTURE_PROFILE_THUMBNAIL = 0,
   NODE_CAPTURE_PROFILE_BALANCED = 1,
   NODE_CAPTURE_PROFILE_HIGH = 2,
+  NODE_CAPTURE_PROFILE_VERY_HIGH = 3,
 };
 
 struct NodeRuntimeConfig {
@@ -18,7 +19,7 @@ struct NodeRuntimeConfig {
   char wifi_password[65] = {0};
   char tcp_host[65] = {0};
   uint16_t tcp_port = 7443;
-  NodeCaptureProfile capture_profile = NODE_CAPTURE_PROFILE_THUMBNAIL;
+  NodeCaptureProfile capture_profile = NODE_CAPTURE_PROFILE_HIGH;
 };
 
 bool node_runtime_config_load(NodeRuntimeConfig* config);

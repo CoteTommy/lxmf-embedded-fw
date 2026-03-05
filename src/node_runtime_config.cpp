@@ -22,12 +22,14 @@ NativeNodeMode default_mode() {
 }
 
 NodeCaptureProfile default_capture_profile() {
-#ifdef LXMF_CAPTURE_PROFILE_HIGH
+#ifdef LXMF_CAPTURE_PROFILE_VERY_HIGH
+  return NODE_CAPTURE_PROFILE_VERY_HIGH;
+#elif defined(LXMF_CAPTURE_PROFILE_HIGH)
   return NODE_CAPTURE_PROFILE_HIGH;
 #elif defined(LXMF_CAPTURE_PROFILE_BALANCED)
   return NODE_CAPTURE_PROFILE_BALANCED;
 #else
-  return NODE_CAPTURE_PROFILE_THUMBNAIL;
+  return NODE_CAPTURE_PROFILE_HIGH;
 #endif
 }
 
@@ -122,6 +124,8 @@ const char* node_runtime_capture_profile_name(const NodeRuntimeConfig& config) {
       return "balanced";
     case NODE_CAPTURE_PROFILE_HIGH:
       return "high";
+    case NODE_CAPTURE_PROFILE_VERY_HIGH:
+      return "very_high";
     default:
       return "unknown";
   }

@@ -47,20 +47,28 @@ def configure() -> None:
     wifi_ssid = os.environ.get("LXMF_WIFI_SSID")
     wifi_password = os.environ.get("LXMF_WIFI_PASSWORD")
     tcp_host = os.environ.get("LXMF_TCP_HOST")
-    tcp_port = os.environ.get("LXMF_TCP_PORT")
+    tcp_port_raw = os.environ.get("LXMF_TCP_PORT", "").strip()
     capture_profile = os.environ.get("LXMF_CAPTURE_PROFILE", "").strip().lower()
+    tcp_port = None
+    if tcp_port_raw:
+        try:
+            tcp_port = int(tcp_port_raw, 10)
+        except ValueError as exc:
+            raise RuntimeError(f"invalid LXMF_TCP_PORT={tcp_port_raw!r}; expected decimal integer") from exc
     if wifi_ssid:
         node_defines.append(("LXMF_WIFI_SSID", env.StringifyMacro(wifi_ssid)))
     if wifi_password:
         node_defines.append(("LXMF_WIFI_PASSWORD", env.StringifyMacro(wifi_password)))
     if tcp_host:
         node_defines.append(("LXMF_TCP_HOST", env.StringifyMacro(tcp_host)))
-    if tcp_port:
+    if tcp_port is not None:
         node_defines.append(("LXMF_TCP_PORT", tcp_port))
-    if capture_profile == "balanced":
-        node_defines.append(("LXMF_CAPTURE_PROFILE_BALANCED", 1))
+    if capture_profile == "very_high":
+        node_defines.append(("LXMF_CAPTURE_PROFILE_VERY_HIGH", 1))
     elif capture_profile == "high":
         node_defines.append(("LXMF_CAPTURE_PROFILE_HIGH", 1))
+    elif capture_profile == "balanced":
+        node_defines.append(("LXMF_CAPTURE_PROFILE_BALANCED", 1))
     elif capture_profile == "thumbnail":
         node_defines.append(("LXMF_CAPTURE_PROFILE_THUMBNAIL", 1))
     if node_defines:

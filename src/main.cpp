@@ -461,6 +461,11 @@ static bool init_camera() {
   config.fb_location = CAMERA_FB_IN_PSRAM;
   const bool has_psram = psramFound();
   switch (g_node_config.capture_profile) {
+    case NODE_CAPTURE_PROFILE_VERY_HIGH:
+      config.frame_size = has_psram ? FRAMESIZE_SVGA : FRAMESIZE_VGA;
+      config.jpeg_quality = has_psram ? 12 : 14;
+      config.fb_count = has_psram ? 2 : 1;
+      break;
     case NODE_CAPTURE_PROFILE_HIGH:
       config.frame_size = has_psram ? FRAMESIZE_VGA : FRAMESIZE_QVGA;
       config.jpeg_quality = has_psram ? 14 : 16;
