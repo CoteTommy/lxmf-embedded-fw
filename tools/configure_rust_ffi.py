@@ -31,6 +31,28 @@ def candidate_pairs(project_dir: Path) -> list[tuple[Path, Path]]:
 def configure() -> None:
     project_dir = Path(env["PROJECT_DIR"]).resolve()
 
+    node_defines: list[object] = []
+    if os.environ.get("LXMF_NODE_MODE_TCP_CLIENT"):
+        node_defines.append(("LXMF_NODE_MODE_TCP_CLIENT", 1))
+    if os.environ.get("LXMF_NODE_MODE_TCP_SERVER"):
+        node_defines.append(("LXMF_NODE_MODE_TCP_SERVER", 1))
+
+    wifi_ssid = os.environ.get("LXMF_WIFI_SSID")
+    wifi_password = os.environ.get("LXMF_WIFI_PASSWORD")
+    tcp_host = os.environ.get("LXMF_TCP_HOST")
+    tcp_port = os.environ.get("LXMF_TCP_PORT")
+    if wifi_ssid:
+        node_defines.append(("LXMF_WIFI_SSID", env.StringifyMacro(wifi_ssid)))
+    if wifi_password:
+        node_defines.append(("LXMF_WIFI_PASSWORD", env.StringifyMacro(wifi_password)))
+    if tcp_host:
+        node_defines.append(("LXMF_TCP_HOST", env.StringifyMacro(tcp_host)))
+    if tcp_port:
+        node_defines.append(("LXMF_TCP_PORT", tcp_port))
+    if node_defines:
+        env.Append(CPPDEFINES=node_defines)
+        print(f"[lxmf-node] applied env build config defines={node_defines}")
+
     for lib_path, include_dir in candidate_pairs(project_dir):
         if not lib_path.is_file():
             continue

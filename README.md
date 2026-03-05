@@ -112,12 +112,25 @@ Firmware now includes a first TCP client scaffold on top of the native runtime b
 Current configuration sources:
 
 1. persisted `Preferences` namespace `lxmfnode`
-2. optional compile-time defaults via build flags:
-   - `-DLXMF_NODE_MODE_TCP_CLIENT`
-   - `-DLXMF_WIFI_SSID=\"your-ssid\"`
-   - `-DLXMF_WIFI_PASSWORD=\"your-password\"`
-   - `-DLXMF_TCP_HOST=\"host-or-ip\"`
-   - `-DLXMF_TCP_PORT=7443`
+2. optional environment-driven build defines applied by `tools/configure_rust_ffi.py`:
+   - `LXMF_NODE_MODE_TCP_CLIENT=1`
+   - `LXMF_WIFI_SSID=your-ssid`
+   - `LXMF_WIFI_PASSWORD=your-password`
+   - `LXMF_TCP_HOST=host-or-ip`
+   - `LXMF_TCP_PORT=7443`
+
+Example:
+
+```bash
+LXMF_NODE_MODE_TCP_CLIENT=1 \
+LXMF_WIFI_SSID="your-ssid" \
+LXMF_WIFI_PASSWORD="your-password" \
+LXMF_TCP_HOST="192.168.1.10" \
+LXMF_TCP_PORT=7443 \
+LXMF_RUST_FFI_LIB=../LXMF-rs/target/xtensa-esp32-espidf/release/librns_embedded_ffi.a \
+LXMF_RUST_FFI_INCLUDE=../LXMF-rs/crates/libs/rns-embedded-ffi/include \
+pio run -t upload
+```
 
 BLE remains active for provisioning/recovery while TCP client mode is being brought up.
 
