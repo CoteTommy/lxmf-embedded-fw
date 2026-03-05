@@ -232,6 +232,7 @@ bool handle_inbound_packet_frame(const uint8_t* bytes, size_t len) {
     log_line("[lxmf-net] invalid packet payload len=%u", (unsigned)payload_len);
     return false;
   }
+  log_line("[lxmf-net] inbound frame kind=0x%02x payload_bytes=%u", (unsigned)kind, (unsigned)payload_len);
   if (kind == kFrameKindCaptureCommand) {
     g_capture_requested = true;
     g_stats.rx_frames++;
@@ -333,6 +334,28 @@ bool tcp_node_client_take_capture_request() {
   return requested;
 }
 
+bool tcp_node_client_send_capture_result(
+    uint8_t status,
+    uint32_t total_bytes,
+    uint16_t chunk_bytes,
+    uint16_t width,
+    uint16_t height) {
+  uint8_t result_payload[11] = {
+      status,
+      static_cast<uint8_t>(total_bytes & 0xFF),
+      static_cast<uint8_t>((total_bytes >> 8) & 0xFF),
+      static_cast<uint8_t>((total_bytes >> 16) & 0xFF),
+      static_cast<uint8_t>((total_bytes >> 24) & 0xFF),
+      static_cast<uint8_t>(chunk_bytes & 0xFF),
+      static_cast<uint8_t>((chunk_bytes >> 8) & 0xFF),
+      static_cast<uint8_t>(width & 0xFF),
+      static_cast<uint8_t>((width >> 8) & 0xFF),
+      static_cast<uint8_t>(height & 0xFF),
+      static_cast<uint8_t>((height >> 8) & 0xFF),
+  };
+  return write_packet_frame(kFrameKindCaptureResult, result_payload, sizeof(result_payload));
+}
+
 bool tcp_node_client_send_capture(const uint8_t* jpeg, size_t len, uint16_t width, uint16_t height) {
   if (!tcp_node_client_connected() || jpeg == nullptr || len == 0) {
     return false;
@@ -342,20 +365,7 @@ bool tcp_node_client_send_capture(const uint8_t* jpeg, size_t len, uint16_t widt
       static_cast<uint16_t>((len + kCaptureChunkPayloadBytes - 1) / kCaptureChunkPayloadBytes);
   const uint16_t chunk_bytes = static_cast<uint16_t>(kCaptureChunkPayloadBytes);
 
-  uint8_t result_payload[11] = {
-      0x00,
-      static_cast<uint8_t>(len & 0xFF),
-      static_cast<uint8_t>((len >> 8) & 0xFF),
-      static_cast<uint8_t>((len >> 16) & 0xFF),
-      static_cast<uint8_t>((len >> 24) & 0xFF),
-      static_cast<uint8_t>(chunk_bytes & 0xFF),
-      static_cast<uint8_t>((chunk_bytes >> 8) & 0xFF),
-      static_cast<uint8_t>(width & 0xFF),
-      static_cast<uint8_t>((width >> 8) & 0xFF),
-      static_cast<uint8_t>(height & 0xFF),
-      static_cast<uint8_t>((height >> 8) & 0xFF),
-  };
-  if (!write_packet_frame(kFrameKindCaptureResult, result_payload, sizeof(result_payload))) {
+  if (!tcp_node_client_send_capture_result(0x00, static_cast<uint32_t>(len), chunk_bytes, width, height)) {
     return false;
   }
 

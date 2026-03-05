@@ -509,6 +509,7 @@ static void run_tcp_capture() {
   if (fb == nullptr) {
     g_diag.drop_invalid++;
     g_diag.fallback_reason = FALLBACK_CAMERA_ERROR;
+    tcp_node_client_send_capture_result(0x02, 0, 0, 0, 0);
     lxmf_log_eventf("capture", "tcp_capture_failed", "tcp capture failed");
     return;
   }
