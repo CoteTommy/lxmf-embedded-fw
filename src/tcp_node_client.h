@@ -19,3 +19,9 @@ struct TcpNodeClientStats {
 void tcp_node_client_init(Stream* log_stream, const NodeRuntimeConfig* config);
 void tcp_node_client_tick(uint32_t now_ms);
 TcpNodeClientStats tcp_node_client_stats();
+bool tcp_node_client_connected();
+bool tcp_node_client_take_capture_request();
+bool tcp_node_client_send_capture(const uint8_t* jpeg,
+                                  size_t len,
+                                  uint16_t width,
+                                  uint16_t height);

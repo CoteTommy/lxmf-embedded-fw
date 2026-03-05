@@ -504,6 +504,31 @@ static void run_capture() {
   }
 }
 
+static void run_tcp_capture() {
+  camera_fb_t* fb = esp_camera_fb_get();
+  if (fb == nullptr) {
+    g_diag.drop_invalid++;
+    g_diag.fallback_reason = FALLBACK_CAMERA_ERROR;
+    lxmf_log_eventf("capture", "tcp_capture_failed", "tcp capture failed");
+    return;
+  }
+  lxmf_log_eventf("capture",
+                  "tcp_capture_start",
+                  "tcp capture frame_bytes=%u width=%u height=%u",
+                  (unsigned)fb->len,
+                  (unsigned)fb->width,
+                  (unsigned)fb->height);
+  bool ok = tcp_node_client_send_capture(fb->buf, fb->len, fb->width, fb->height);
+  esp_camera_fb_return(fb);
+  if (ok) {
+    g_diag.message_tx++;
+    lxmf_log_eventf("capture", "tcp_capture_done", "tcp capture sent");
+  } else {
+    g_diag.drop_disconnected++;
+    lxmf_log_eventf("capture", "tcp_capture_send_failed", "tcp capture send failed");
+  }
+}
+
 static void native_node_runtime_tick() {
   if (!g_native_node_enabled) {
     return;
@@ -659,9 +684,13 @@ void loop() {
   }
   tcp_node_client_tick(now);
   native_node_runtime_tick();
+  if (tcp_node_client_take_capture_request()) {
+    lxmf_log_eventf("capture", "tcp_capture_requested", "tcp capture requested");
+    run_tcp_capture();
+  }
   if (g_capture_requested) {
     g_capture_requested = false;
-    Serial.println("[lxmf-cam] capture requested");
+    lxmf_log_eventf("capture", "ble_capture_requested", "ble capture requested");
     run_capture();
   }
   delay(20);
