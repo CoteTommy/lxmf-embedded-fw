@@ -35,6 +35,16 @@ NATIVE_WIRE layout:
 - byte 0: frame type (`0x23`)
 - bytes 1..: encoded `rns-embedded-core` packet frame bytes (`RNE1...`)
 
+Temporary helper control frames:
+
+- `0x21` NATIVE_ANNOUNCE_REQ
+  - host asks firmware to queue a native runtime announce through the on-device runtime
+- `0x22` NATIVE_MESSAGE_TX_REQ
+  - host asks firmware to queue a native runtime LXMF message body through the on-device runtime
+
+These are convenience triggers for bring-up. The intended steady-state transport is `0x23`
+carrying encoded native runtime frames directly.
+
 ## UUID defaults
 
 - Service UUID: `12345678-1234-1234-1234-1234567890ab`
