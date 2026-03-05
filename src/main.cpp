@@ -3,8 +3,11 @@
 #include <BLEServer.h>
 #include <BLEUtils.h>
 #include <BLE2902.h>
+#include <BLEAdvertising.h>
+#include <esp_bt_device.h>
 
 static const char* DEVICE_NAME = "LXMF-CAM-STUB";
+static const char* MANUFACTURER_MARKER = "LXMF01";
 
 static const char* SERVICE_UUID = "12345678-1234-1234-1234-1234567890ab";
 static const char* WRITE_CHAR_UUID = "12345678-1234-1234-1234-1234567890ac";
@@ -22,12 +25,29 @@ static BLECharacteristic* g_notify = nullptr;
 static volatile bool g_capture_requested = false;
 
 static uint32_t g_transfer_id = 1;
+static bool g_connected = false;
+
+class ServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* server) override {
+    (void)server;
+    g_connected = true;
+    Serial.println("[lxmf-cam] ble client connected");
+  }
+
+  void onDisconnect(BLEServer* server) override {
+    (void)server;
+    g_connected = false;
+    Serial.println("[lxmf-cam] ble client disconnected");
+    BLEDevice::startAdvertising();
+    Serial.println("[lxmf-cam] advertising restarted");
+  }
+};
 
 static void notify_bytes(const uint8_t* data, size_t len) {
   if (g_notify == nullptr) {
     return;
   }
-  g_notify->setValue(data, len);
+  g_notify->setValue(const_cast<uint8_t*>(data), len);
   g_notify->notify();
   delay(12);
 }
@@ -121,6 +141,7 @@ void setup() {
 
   BLEDevice::init(DEVICE_NAME);
   BLEServer* server = BLEDevice::createServer();
+  server->setCallbacks(new ServerCallbacks());
   BLEService* service = server->createService(SERVICE_UUID);
 
   BLECharacteristic* write_char = service->createCharacteristic(
@@ -137,6 +158,10 @@ void setup() {
 
   BLEAdvertising* advertising = BLEDevice::getAdvertising();
   advertising->addServiceUUID(SERVICE_UUID);
+  BLEAdvertisementData scan_data;
+  std::string manufacturer_payload(MANUFACTURER_MARKER);
+  scan_data.setManufacturerData(manufacturer_payload);
+  advertising->setScanResponseData(scan_data);
   advertising->setScanResponse(true);
   advertising->setMinPreferred(0x06);
   advertising->setMinPreferred(0x12);
@@ -147,9 +172,24 @@ void setup() {
   Serial.println(SERVICE_UUID);
   Serial.println(WRITE_CHAR_UUID);
   Serial.println(NOTIFY_CHAR_UUID);
+  Serial.print("manufacturer_marker=");
+  Serial.println(MANUFACTURER_MARKER);
+  const uint8_t* mac = esp_bt_dev_get_address();
+  if (mac != nullptr) {
+    Serial.printf("ble_mac=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  }
 }
 
 void loop() {
+  static uint32_t last_heartbeat = 0;
+  uint32_t now = millis();
+  if (now - last_heartbeat >= 5000) {
+    last_heartbeat = now;
+    Serial.printf("[lxmf-cam] heartbeat connected=%s transfer_id=%lu\n",
+                  g_connected ? "yes" : "no",
+                  (unsigned long)g_transfer_id);
+  }
   if (g_capture_requested) {
     g_capture_requested = false;
     Serial.println("[lxmf-cam] capture requested");
