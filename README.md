@@ -6,6 +6,7 @@ Current status:
 - real OV2640 JPEG capture over BLE camera protocol
 - native embedded runtime bridge integrated into firmware loop
 - Rust FFI backend works when `rns-embedded-ffi` is built for `xtensa-esp32-espidf` and linked into the PlatformIO build
+- bridge now tracks node mode, provisioning state, and runtime lifecycle so Wi-Fi/TCP node mode can be layered in without breaking the BLE proof path
 
 ## Protocol
 
@@ -99,7 +100,7 @@ If no valid library/header pair is found, firmware logs and runs with `backend=s
 
 ## Next steps
 
-1. Expand the pure `0x23` native wire flow beyond test ping/LXMF ping into fuller host interop.
-2. Bridge native BLE runtime traffic cleanly into standard host Reticulum services.
-3. Populate `crc32` and converge the camera transport with runtime attachment semantics.
-4. Add transport alternatives such as Wi-Fi/TCP once the runtime framing is stable.
+1. Add Wi-Fi persistence and provisioning on top of the runtime lifecycle scaffold.
+2. Wire TCP client mode into the bridge as the first standalone-node transport.
+3. Add TCP server mode after client mode is stable on-device.
+4. Converge camera transport with runtime attachment semantics and hash/CRC verification.

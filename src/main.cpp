@@ -79,6 +79,7 @@ class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
     (void)server;
     g_connected = true;
+    native_runtime_bridge_set_ble_recovery_active(true);
     native_runtime_bridge_set_link_state(true);
     Serial.println("[lxmf-cam] ble client connected");
   }
@@ -86,6 +87,7 @@ class ServerCallbacks : public BLEServerCallbacks {
   void onDisconnect(BLEServer* server) override {
     (void)server;
     g_connected = false;
+    native_runtime_bridge_set_ble_recovery_active(false);
     native_runtime_bridge_set_link_state(false);
     Serial.println("[lxmf-cam] ble client disconnected");
     BLEDevice::startAdvertising();
@@ -520,6 +522,9 @@ void setup() {
   delay(100);
   Serial.println("[lxmf-cam] boot");
   native_runtime_bridge_init(&Serial);
+  native_runtime_bridge_set_node_mode(NATIVE_NODE_MODE_BLE_ONLY);
+  native_runtime_bridge_set_network_provisioned(false);
+  native_runtime_bridge_set_ble_recovery_active(false);
 
   BLEDevice::init(DEVICE_NAME);
   BLEServer* server = BLEDevice::createServer();
@@ -593,6 +598,12 @@ void loop() {
         (unsigned long)native_stats.outbound_frames,
         (unsigned long)native_stats.inbound_frames,
         (unsigned long)native_stats.last_sequence);
+    Serial.printf(
+        "[lxmf-native] state mode=%s lifecycle=%s provisioned=%s ble_recovery=%s\n",
+        native_runtime_bridge_mode_name(),
+        native_runtime_bridge_lifecycle_name(),
+        native_stats.network_provisioned ? "yes" : "no",
+        native_stats.ble_recovery_active ? "yes" : "no");
   }
   native_node_runtime_tick();
   if (g_capture_requested) {

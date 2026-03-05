@@ -16,6 +16,8 @@ Stream* g_log_stream = nullptr;
 NativeRuntimeBridgeStats g_stats;
 bool g_connected = false;
 uint32_t g_last_announce_ms = 0;
+NativeNodeMode g_node_mode = NATIVE_NODE_MODE_BLE_ONLY;
+const char* g_lifecycle_name = "boot";
 
 #if LXMF_HAS_RUST_FFI
 RnsEmbeddedNode* g_node = nullptr;
@@ -25,6 +27,20 @@ RnsEmbeddedStatus ensure_node() {
     return RNS_EMBEDDED_STATUS_OK;
   }
   RnsEmbeddedNodeConfig config = rns_embedded_node_config_default();
+  switch (g_node_mode) {
+    case NATIVE_NODE_MODE_BLE_ONLY:
+      config.node_mode = RNS_EMBEDDED_NODE_MODE_BLE_ONLY;
+      break;
+    case NATIVE_NODE_MODE_TCP_CLIENT:
+      config.node_mode = RNS_EMBEDDED_NODE_MODE_TCP_CLIENT;
+      break;
+    case NATIVE_NODE_MODE_TCP_SERVER:
+      config.node_mode = RNS_EMBEDDED_NODE_MODE_TCP_SERVER;
+      break;
+    default:
+      config.node_mode = RNS_EMBEDDED_NODE_MODE_BLE_ONLY;
+      break;
+  }
   g_node = rns_embedded_node_new(&config);
   return g_node == nullptr ? RNS_EMBEDDED_STATUS_INVALID_STATE : RNS_EMBEDDED_STATUS_OK;
 }
@@ -61,6 +77,8 @@ void native_runtime_bridge_init(Stream* log_stream) {
   g_stats = NativeRuntimeBridgeStats{};
   g_connected = false;
   g_last_announce_ms = 0;
+  g_node_mode = NATIVE_NODE_MODE_BLE_ONLY;
+  g_lifecycle_name = "boot";
 #if LXMF_HAS_RUST_FFI
   if (g_node != nullptr) {
     rns_embedded_node_free(g_node);
@@ -70,6 +88,37 @@ void native_runtime_bridge_init(Stream* log_stream) {
   log_line("[lxmf-native] init backend=%s status=%d", native_runtime_bridge_backend_name(), (int)status);
 #else
   log_line("[lxmf-native] init backend=%s", native_runtime_bridge_backend_name());
+#endif
+}
+
+void native_runtime_bridge_set_node_mode(NativeNodeMode mode) {
+  g_node_mode = mode;
+#if LXMF_HAS_RUST_FFI
+  if (g_node != nullptr) {
+    rns_embedded_node_free(g_node);
+    g_node = nullptr;
+  }
+  ensure_node();
+#endif
+}
+
+void native_runtime_bridge_set_network_provisioned(bool provisioned) {
+  g_stats.network_provisioned = provisioned;
+#if LXMF_HAS_RUST_FFI
+  if (ensure_node() != RNS_EMBEDDED_STATUS_OK) {
+    return;
+  }
+  rns_embedded_node_set_network_provisioned(g_node, provisioned);
+#endif
+}
+
+void native_runtime_bridge_set_ble_recovery_active(bool active) {
+  g_stats.ble_recovery_active = active;
+#if LXMF_HAS_RUST_FFI
+  if (ensure_node() != RNS_EMBEDDED_STATUS_OK) {
+    return;
+  }
+  rns_embedded_node_set_ble_recovery_active(g_node, active);
 #endif
 }
 
@@ -92,6 +141,30 @@ void native_runtime_bridge_tick(uint32_t now_ms) {
     return;
   }
   RnsEmbeddedStatus status = rns_embedded_node_tick(g_node, now_ms);
+  RnsEmbeddedLifecycleState lifecycle = rns_embedded_node_get_lifecycle_state(g_node);
+  switch (lifecycle) {
+    case RNS_EMBEDDED_LIFECYCLE_BOOT:
+      g_lifecycle_name = "boot";
+      break;
+    case RNS_EMBEDDED_LIFECYCLE_UNPROVISIONED:
+      g_lifecycle_name = "unprovisioned";
+      break;
+    case RNS_EMBEDDED_LIFECYCLE_PROVISIONED_OFFLINE:
+      g_lifecycle_name = "provisioned_offline";
+      break;
+    case RNS_EMBEDDED_LIFECYCLE_TCP_ONLINE:
+      g_lifecycle_name = "tcp_online";
+      break;
+    case RNS_EMBEDDED_LIFECYCLE_BLE_RECOVERY:
+      g_lifecycle_name = "ble_recovery";
+      break;
+    case RNS_EMBEDDED_LIFECYCLE_FAILURE_RECONNECT:
+      g_lifecycle_name = "failure_reconnect";
+      break;
+    default:
+      g_lifecycle_name = "unknown";
+      break;
+  }
   if (status != RNS_EMBEDDED_STATUS_OK && g_log_stream != nullptr) {
     log_line("[lxmf-native] tick status=%d", (int)status);
   }
@@ -183,4 +256,21 @@ const char* native_runtime_bridge_backend_name() {
 #else
   return "stub";
 #endif
+}
+
+const char* native_runtime_bridge_mode_name() {
+  switch (g_node_mode) {
+    case NATIVE_NODE_MODE_BLE_ONLY:
+      return "ble_only";
+    case NATIVE_NODE_MODE_TCP_CLIENT:
+      return "tcp_client";
+    case NATIVE_NODE_MODE_TCP_SERVER:
+      return "tcp_server";
+    default:
+      return "unknown";
+  }
+}
+
+const char* native_runtime_bridge_lifecycle_name() {
+  return g_lifecycle_name;
 }
