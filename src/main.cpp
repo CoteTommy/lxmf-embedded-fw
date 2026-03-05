@@ -4,10 +4,14 @@
 #include <BLEUtils.h>
 #include <BLE2902.h>
 #include <BLEAdvertising.h>
+#include <Preferences.h>
+#include <WiFi.h>
 #include <esp_bt_device.h>
 #include <esp_camera.h>
 
 #include "native_runtime_bridge.h"
+#include "node_runtime_config.h"
+#include "tcp_node_client.h"
 
 static const char* DEVICE_NAME = "LXMF-CAM-STUB";
 static const char* MANUFACTURER_MARKER = "LXMF01";
@@ -35,6 +39,7 @@ static const size_t BLE_NATIVE_WIRE_MAX_BYTES = 180;
 
 static BLECharacteristic* g_notify = nullptr;
 static volatile bool g_capture_requested = false;
+static NodeRuntimeConfig g_node_config;
 
 static uint32_t g_transfer_id = 1;
 static bool g_connected = false;
@@ -80,7 +85,9 @@ class ServerCallbacks : public BLEServerCallbacks {
     (void)server;
     g_connected = true;
     native_runtime_bridge_set_ble_recovery_active(true);
-    native_runtime_bridge_set_link_state(true);
+    if (g_node_config.node_mode == NATIVE_NODE_MODE_BLE_ONLY) {
+      native_runtime_bridge_set_link_state(true);
+    }
     Serial.println("[lxmf-cam] ble client connected");
   }
 
@@ -88,7 +95,9 @@ class ServerCallbacks : public BLEServerCallbacks {
     (void)server;
     g_connected = false;
     native_runtime_bridge_set_ble_recovery_active(false);
-    native_runtime_bridge_set_link_state(false);
+    if (g_node_config.node_mode == NATIVE_NODE_MODE_BLE_ONLY) {
+      native_runtime_bridge_set_link_state(false);
+    }
     Serial.println("[lxmf-cam] ble client disconnected");
     BLEDevice::startAdvertising();
     Serial.println("[lxmf-cam] advertising restarted");
@@ -521,10 +530,17 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("[lxmf-cam] boot");
+  node_runtime_config_load(&g_node_config);
   native_runtime_bridge_init(&Serial);
-  native_runtime_bridge_set_node_mode(NATIVE_NODE_MODE_BLE_ONLY);
-  native_runtime_bridge_set_network_provisioned(false);
+  native_runtime_bridge_set_node_mode(g_node_config.node_mode);
+  native_runtime_bridge_set_network_provisioned(node_runtime_config_has_wifi(g_node_config));
   native_runtime_bridge_set_ble_recovery_active(false);
+  tcp_node_client_init(&Serial, &g_node_config);
+  Serial.printf("[lxmf-node] config mode=%s wifi=%s tcp_host=%s tcp_port=%u\n",
+                node_runtime_config_mode_name(g_node_config),
+                node_runtime_config_has_wifi(g_node_config) ? "set" : "unset",
+                node_runtime_config_has_tcp_client_target(g_node_config) ? g_node_config.tcp_host : "<unset>",
+                g_node_config.tcp_port);
 
   BLEDevice::init(DEVICE_NAME);
   BLEServer* server = BLEDevice::createServer();
@@ -582,6 +598,7 @@ void loop() {
   if (now - last_diag >= 10000) {
     last_diag = now;
     NativeRuntimeBridgeStats native_stats = native_runtime_bridge_stats();
+    TcpNodeClientStats tcp_stats = tcp_node_client_stats();
     Serial.printf(
         "[lxmf-cam] diag announce=%lu msg_tx=%lu msg_rx=%lu retry=%lu drop_invalid=%lu drop_seq=%lu drop_disc=%lu drop_backpressure=%lu fallback=%s native_backend=%s native_ticks=%lu native_out=%lu native_in=%lu native_seq=%lu\n",
         (unsigned long)g_diag.announce_sent,
@@ -604,7 +621,15 @@ void loop() {
         native_runtime_bridge_lifecycle_name(),
         native_stats.network_provisioned ? "yes" : "no",
         native_stats.ble_recovery_active ? "yes" : "no");
+    Serial.printf(
+        "[lxmf-net] wifi=%s tcp=%s reconnects=%lu tx_frames=%lu rx_frames=%lu\n",
+        tcp_stats.wifi_connected ? "up" : "down",
+        tcp_stats.tcp_connected ? "up" : "down",
+        (unsigned long)tcp_stats.reconnects,
+        (unsigned long)tcp_stats.tx_frames,
+        (unsigned long)tcp_stats.rx_frames);
   }
+  tcp_node_client_tick(now);
   native_node_runtime_tick();
   if (g_capture_requested) {
     g_capture_requested = false;

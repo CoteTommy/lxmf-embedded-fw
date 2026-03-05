@@ -98,6 +98,29 @@ It enables the real bridge when either:
 
 If no valid library/header pair is found, firmware logs and runs with `backend=stub`.
 
+## TCP client scaffold
+
+Firmware now includes a first TCP client scaffold on top of the native runtime bridge:
+
+- `src/node_runtime_config.h/.cpp`
+  - persisted node mode / Wi-Fi / TCP endpoint config
+- `src/tcp_node_client.h/.cpp`
+  - Wi-Fi connect loop
+  - TCP client reconnect loop
+  - length-prefixed native runtime frame send/receive
+
+Current configuration sources:
+
+1. persisted `Preferences` namespace `lxmfnode`
+2. optional compile-time defaults via build flags:
+   - `-DLXMF_NODE_MODE_TCP_CLIENT`
+   - `-DLXMF_WIFI_SSID=\"your-ssid\"`
+   - `-DLXMF_WIFI_PASSWORD=\"your-password\"`
+   - `-DLXMF_TCP_HOST=\"host-or-ip\"`
+   - `-DLXMF_TCP_PORT=7443`
+
+BLE remains active for provisioning/recovery while TCP client mode is being brought up.
+
 ## Next steps
 
 1. Add Wi-Fi persistence and provisioning on top of the runtime lifecycle scaffold.
