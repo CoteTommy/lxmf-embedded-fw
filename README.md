@@ -2,7 +2,10 @@
 
 ESP32-CAM firmware scaffold for BLE camera-capture interoperability with `rnx camera-capture-upload`.
 
-Current status: `ble_stub` implemented (fake chunk stream). No real camera capture yet.
+Current status:
+- real OV2640 JPEG capture over BLE camera protocol
+- native embedded runtime bridge scaffold integrated into firmware loop
+- default bridge backend is `stub` until the Rust ESP toolchain and static library link step are added
 
 ## Protocol
 
@@ -15,6 +18,7 @@ Implements the frame ids expected by current host bridge:
 - `0x06` DONE (device -> host notify)
 - `0x07` ERROR (device -> host notify)
 - `0x08` NACK (host -> device write)
+- `0x23` NATIVE_WIRE (bidirectional runtime frame wrapper)
 
 CHUNK wire layout:
 
@@ -25,6 +29,11 @@ CHUNK wire layout:
 - bytes 9..10: `payload_len` (little-endian `u16`)
 - bytes 11..14: `crc32` (little-endian `u32`, currently `0` in stub)
 - bytes 15..: payload
+
+NATIVE_WIRE layout:
+
+- byte 0: frame type (`0x23`)
+- bytes 1..: encoded `rns-embedded-core` packet frame bytes (`RNE1...`)
 
 ## UUID defaults
 
@@ -55,8 +64,39 @@ NOTIFY_CHAR_UUID="12345678-1234-1234-1234-1234567890ad" \
 ./tools/scripts/esp32-camera-capture-smoke.sh
 ```
 
+## Native runtime bridge
+
+Firmware now includes `src/native_runtime_bridge.h/.cpp`, which is the seam for the
+embedded Reticulum runtime.
+
+- If `rns_embedded_ffi.h` and a matching Rust static library are available to the build,
+  the bridge can call the Rust FFI node runtime.
+- Without that toolchain, the bridge runs a stub backend and logs native tick activity so
+  the firmware integration points remain exercised.
+
+Current blocker for real on-device Rust runtime linking:
+
+1. install the ESP Rust toolchain for ESP32/Xtensa or migrate to an ESP target that has a supported Rust flow
+2. build `rns-embedded-ffi` as a static library for that target
+3. add the library/header to the PlatformIO build
+
+PlatformIO now auto-detects the Rust FFI library via `tools/configure_rust_ffi.py`.
+
+It enables the real bridge when either:
+
+1. these environment variables are set:
+   - `LXMF_RUST_FFI_LIB=/absolute/path/to/librns_embedded_ffi.a`
+   - `LXMF_RUST_FFI_INCLUDE=/absolute/path/to/rns-embedded-ffi/include`
+2. or one of the common sibling repo artifacts exists:
+   - `../LXMF-rs/target/xtensa-esp32-espidf/release/librns_embedded_ffi.a`
+   - `../LXMF-rs/target/xtensa-esp32-none-elf/release/librns_embedded_ffi.a`
+   - `../LXMF-rs/target/xtensa-esp32s3-none-elf/release/librns_embedded_ffi.a`
+
+If no valid library/header pair is found, firmware logs and runs with `backend=stub`.
+
 ## Next steps
 
-1. Replace stub bytes with real OV2640 JPEG capture.
-2. Populate `crc32`.
-3. Add chunk retry behavior on host `NACK`.
+1. Add the ESP Rust target/toolchain and build `rns-embedded-ffi` for firmware consumption.
+2. Link the generated static library and header into PlatformIO.
+3. Add a host-side native BLE probe/send path for `0x23` wrapped runtime frames.
+4. Populate `crc32` and converge the camera transport with runtime attachment semantics.

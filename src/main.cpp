@@ -7,6 +7,8 @@
 #include <esp_bt_device.h>
 #include <esp_camera.h>
 
+#include "native_runtime_bridge.h"
+
 static const char* DEVICE_NAME = "LXMF-CAM-STUB";
 static const char* MANUFACTURER_MARKER = "LXMF01";
 
@@ -23,13 +25,16 @@ static const uint8_t FRAME_ERROR = 0x07;
 static const uint8_t FRAME_NACK = 0x08;
 static const uint8_t FRAME_NATIVE_ANNOUNCE_REQ = 0x21;
 static const uint8_t FRAME_NATIVE_MESSAGE_TX_REQ = 0x22;
+static const uint8_t FRAME_NATIVE_WIRE = 0x23;
+static const uint16_t BLE_CHUNK_PAYLOAD_BYTES = 5;
+static const uint8_t BLE_ACK_EVERY_CHUNKS = 4;
+static const uint32_t BLE_ACK_TIMEOUT_MS = 900;
+static const uint8_t BLE_NOTIFY_DELAY_MS = 8;
+static const size_t BLE_ACK_QUEUE_CAPACITY = 32;
+static const size_t BLE_NATIVE_WIRE_MAX_BYTES = 180;
 
 static BLECharacteristic* g_notify = nullptr;
 static volatile bool g_capture_requested = false;
-static volatile bool g_ack_pending = false;
-static volatile uint8_t g_ack_type = 0;
-static volatile uint32_t g_ack_transfer_id = 0;
-static volatile uint16_t g_ack_seq = 0;
 
 static uint32_t g_transfer_id = 1;
 static bool g_connected = false;
@@ -56,21 +61,69 @@ struct NativeNodeDiagnostics {
 
 static NativeNodeDiagnostics g_diag;
 
+struct AckEvent {
+  uint8_t type;
+  uint32_t transfer_id;
+  uint16_t seq;
+};
+
+static volatile AckEvent g_ack_queue[BLE_ACK_QUEUE_CAPACITY];
+static volatile uint8_t g_ack_queue_head = 0;
+static volatile uint8_t g_ack_queue_tail = 0;
+static const uint8_t NATIVE_DESTINATION_STUB[16] = {
+  0x4C, 0x58, 0x4D, 0x46, 0x2D, 0x45, 0x53, 0x50,
+  0x33, 0x32, 0x2D, 0x4E, 0x4F, 0x44, 0x45, 0x01
+};
+
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
     (void)server;
     g_connected = true;
+    native_runtime_bridge_set_link_state(true);
     Serial.println("[lxmf-cam] ble client connected");
   }
 
   void onDisconnect(BLEServer* server) override {
     (void)server;
     g_connected = false;
+    native_runtime_bridge_set_link_state(false);
     Serial.println("[lxmf-cam] ble client disconnected");
     BLEDevice::startAdvertising();
     Serial.println("[lxmf-cam] advertising restarted");
   }
 };
+
+static bool enqueue_ack_event(uint8_t type, uint32_t transfer_id, uint16_t seq) {
+  bool queued = false;
+  noInterrupts();
+  uint8_t next_head = (uint8_t)((g_ack_queue_head + 1) % BLE_ACK_QUEUE_CAPACITY);
+  if (next_head != g_ack_queue_tail) {
+    g_ack_queue[g_ack_queue_head].type = type;
+    g_ack_queue[g_ack_queue_head].transfer_id = transfer_id;
+    g_ack_queue[g_ack_queue_head].seq = seq;
+    g_ack_queue_head = next_head;
+    queued = true;
+  }
+  interrupts();
+  if (!queued) {
+    g_diag.drop_backpressure++;
+  }
+  return queued;
+}
+
+static bool dequeue_ack_event(AckEvent* event) {
+  bool found = false;
+  noInterrupts();
+  if (g_ack_queue_head != g_ack_queue_tail) {
+    event->type = g_ack_queue[g_ack_queue_tail].type;
+    event->transfer_id = g_ack_queue[g_ack_queue_tail].transfer_id;
+    event->seq = g_ack_queue[g_ack_queue_tail].seq;
+    g_ack_queue_tail = (uint8_t)((g_ack_queue_tail + 1) % BLE_ACK_QUEUE_CAPACITY);
+    found = true;
+  }
+  interrupts();
+  return found;
+}
 
 static void notify_bytes(const uint8_t* data, size_t len) {
   if (g_notify == nullptr) {
@@ -78,7 +131,7 @@ static void notify_bytes(const uint8_t* data, size_t len) {
   }
   g_notify->setValue(const_cast<uint8_t*>(data), len);
   g_notify->notify();
-  delay(12);
+  delay(BLE_NOTIFY_DELAY_MS);
 }
 
 static void notify_capture_ack() {
@@ -98,6 +151,24 @@ static void notify_error(const char* msg) {
   frame[0] = FRAME_ERROR;
   memcpy(&frame[1], msg, msg_len);
   notify_bytes(frame, 1 + msg_len);
+}
+
+static bool notify_native_wire(const uint8_t* payload, size_t payload_len) {
+  if (payload == nullptr || payload_len == 0) {
+    return false;
+  }
+  if (payload_len > BLE_NATIVE_WIRE_MAX_BYTES) {
+    Serial.printf("[lxmf-cam] native outbound too large bytes=%u max=%u\n",
+                  (unsigned)payload_len,
+                  (unsigned)BLE_NATIVE_WIRE_MAX_BYTES);
+    g_diag.drop_backpressure++;
+    return false;
+  }
+  uint8_t frame[1 + BLE_NATIVE_WIRE_MAX_BYTES];
+  frame[0] = FRAME_NATIVE_WIRE;
+  memcpy(&frame[1], payload, payload_len);
+  notify_bytes(frame, payload_len + 1);
+  return true;
 }
 
 static const char* fallback_reason_name(FallbackReasonCode code) {
@@ -160,25 +231,58 @@ class CaptureWriteCallbacks : public BLECharacteristicCallbacks {
     if (frame_type == FRAME_NATIVE_ANNOUNCE_REQ) {
       g_diag.announce_sent++;
       Serial.println("[lxmf-cam] native announce requested");
+      native_runtime_bridge_queue_message(NATIVE_DESTINATION_STUB, (const uint8_t*)"announce", 8);
       return;
     }
 
     if (frame_type == FRAME_NATIVE_MESSAGE_TX_REQ) {
       g_diag.message_tx++;
       Serial.println("[lxmf-cam] native message tx requested");
+      if (value.size() > 1) {
+        native_runtime_bridge_queue_message(
+            NATIVE_DESTINATION_STUB,
+            reinterpret_cast<const uint8_t*>(value.data() + 1),
+            value.size() - 1);
+      }
+      return;
+    }
+
+    if (frame_type == FRAME_NATIVE_WIRE) {
+      if (value.size() <= 1) {
+        g_diag.drop_invalid++;
+        Serial.println("[lxmf-cam] native inbound empty");
+        return;
+      }
+      bool accepted = native_runtime_bridge_push_inbound_wire(
+          reinterpret_cast<const uint8_t*>(value.data() + 1),
+          value.size() - 1);
+      if (accepted) {
+        Serial.printf("[lxmf-cam] native inbound bytes=%u backend=%s\n",
+                      (unsigned)(value.size() - 1),
+                      native_runtime_bridge_backend_name());
+      } else {
+        g_diag.drop_invalid++;
+        Serial.printf("[lxmf-cam] native inbound rejected bytes=%u backend=%s\n",
+                      (unsigned)(value.size() - 1),
+                      native_runtime_bridge_backend_name());
+      }
       return;
     }
 
     if (frame_type == FRAME_CHUNK_ACK || frame_type == FRAME_NACK) {
       if (value.size() >= 7) {
-        g_ack_type = frame_type;
-        g_ack_transfer_id = (uint32_t)(uint8_t)value[1]
+        uint32_t ack_transfer_id = (uint32_t)(uint8_t)value[1]
             | ((uint32_t)(uint8_t)value[2] << 8)
             | ((uint32_t)(uint8_t)value[3] << 16)
             | ((uint32_t)(uint8_t)value[4] << 24);
-        g_ack_seq = (uint16_t)(uint8_t)value[5]
+        uint16_t ack_seq = (uint16_t)(uint8_t)value[5]
             | ((uint16_t)(uint8_t)value[6] << 8);
-        g_ack_pending = true;
+        if (!enqueue_ack_event(frame_type, ack_transfer_id, ack_seq)) {
+          Serial.printf("[lxmf-cam] ack queue overflow transfer_id=%lu seq=%u type=0x%02x\n",
+                        (unsigned long)ack_transfer_id,
+                        (unsigned)ack_seq,
+                        (unsigned)frame_type);
+        }
       }
       if (frame_type == FRAME_NACK) {
         g_diag.drop_seq_gap++;
@@ -193,26 +297,39 @@ class CaptureWriteCallbacks : public BLECharacteristicCallbacks {
 static bool wait_for_ack(uint32_t transfer_id, uint16_t seq, uint32_t timeout_ms) {
   uint32_t start = millis();
   while ((millis() - start) < timeout_ms) {
-    if (g_ack_pending) {
-      noInterrupts();
-      bool pending = g_ack_pending;
-      uint8_t ack_type = g_ack_type;
-      uint32_t ack_transfer_id = g_ack_transfer_id;
-      uint16_t ack_seq = g_ack_seq;
-      g_ack_pending = false;
-      interrupts();
-      if (!pending) {
+    AckEvent event;
+    if (dequeue_ack_event(&event)) {
+      if (event.transfer_id != transfer_id) {
+        Serial.printf("[lxmf-cam] ack ignored transfer_id=%lu got_transfer_id=%lu seq=%u type=0x%02x\n",
+                      (unsigned long)transfer_id,
+                      (unsigned long)event.transfer_id,
+                      (unsigned)event.seq,
+                      (unsigned)event.type);
         continue;
       }
-      if (ack_transfer_id != transfer_id) {
-        continue;
-      }
-      if (ack_type == FRAME_CHUNK_ACK && ack_seq == seq) {
+      if (event.type == FRAME_CHUNK_ACK && event.seq >= seq) {
         return true;
       }
-      if (ack_type == FRAME_NACK && ack_seq == seq) {
+      if (event.type == FRAME_CHUNK_ACK && event.seq < seq) {
+        if (event.seq < 8 || ((event.seq + 1) % 100) == 0) {
+          Serial.printf("[lxmf-cam] ack progress transfer_id=%lu ack_seq=%u wait_seq=%u\n",
+                        (unsigned long)transfer_id,
+                        (unsigned)event.seq,
+                        (unsigned)seq);
+        }
+        continue;
+      }
+      if (event.type == FRAME_NACK) {
+        Serial.printf("[lxmf-cam] nack transfer_id=%lu seq=%u\n",
+                      (unsigned long)transfer_id,
+                      (unsigned)event.seq);
         return false;
       }
+      Serial.printf("[lxmf-cam] ack mismatch transfer_id=%lu seq=%u got_seq=%u type=0x%02x\n",
+                    (unsigned long)transfer_id,
+                    (unsigned)seq,
+                    (unsigned)event.seq,
+                    (unsigned)event.type);
     }
     delay(2);
   }
@@ -220,25 +337,56 @@ static bool wait_for_ack(uint32_t transfer_id, uint16_t seq, uint32_t timeout_ms
 }
 
 static bool send_framebuffer_chunked(const uint8_t* data, size_t len) {
-  const uint16_t chunk_payload = 19;
   if (len == 0) {
     notify_error("empty_frame");
     return false;
   }
-  const uint32_t total_chunks_32 = (uint32_t)((len + chunk_payload - 1) / chunk_payload);
+  const uint32_t total_chunks_32 = (uint32_t)((len + BLE_CHUNK_PAYLOAD_BYTES - 1) / BLE_CHUNK_PAYLOAD_BYTES);
   if (total_chunks_32 > 65535U) {
     notify_error("frame_too_large");
     return false;
   }
   uint16_t total_chunks = (uint16_t)total_chunks_32;
+  Serial.printf("[lxmf-cam] transfer start transfer_id=%lu frame_bytes=%u chunk_payload=%u total_chunks=%u\n",
+                (unsigned long)g_transfer_id,
+                (unsigned)len,
+                (unsigned)BLE_CHUNK_PAYLOAD_BYTES,
+                (unsigned)total_chunks);
   uint16_t seq = 0;
   size_t offset = 0;
+  uint32_t transfer_started = millis();
   while (offset < len) {
-    uint16_t n = (uint16_t)min((size_t)chunk_payload, len - offset);
+    size_t batch_offset = offset;
+    uint16_t batch_seq_start = seq;
+    uint8_t batch_count = 0;
+    while (offset < len && batch_count < BLE_ACK_EVERY_CHUNKS) {
+      uint16_t n = (uint16_t)min((size_t)BLE_CHUNK_PAYLOAD_BYTES, len - offset);
+      offset += n;
+      seq++;
+      batch_count++;
+    }
+    uint16_t batch_seq_end = (uint16_t)(seq - 1);
+    size_t batch_len = offset - batch_offset;
     bool accepted = false;
     for (int attempt = 0; attempt < 3 && !accepted; ++attempt) {
-      notify_chunk(seq, total_chunks, data + offset, n);
-      accepted = wait_for_ack(g_transfer_id, seq, 900);
+      if (attempt > 0) {
+        Serial.printf("[lxmf-cam] retry transfer_id=%lu seq_range=%u-%u attempt=%d offset=%u batch_bytes=%u\n",
+                      (unsigned long)g_transfer_id,
+                      (unsigned)batch_seq_start,
+                      (unsigned)batch_seq_end,
+                      attempt + 1,
+                      (unsigned)batch_offset,
+                      (unsigned)batch_len);
+      }
+      size_t resend_offset = batch_offset;
+      uint16_t resend_seq = batch_seq_start;
+      while (resend_offset < offset) {
+        uint16_t n = (uint16_t)min((size_t)BLE_CHUNK_PAYLOAD_BYTES, offset - resend_offset);
+        notify_chunk(resend_seq, total_chunks, data + resend_offset, n);
+        resend_offset += n;
+        resend_seq++;
+      }
+      accepted = wait_for_ack(g_transfer_id, batch_seq_end, BLE_ACK_TIMEOUT_MS);
       if (!accepted && attempt < 2) {
         g_diag.chunk_retry_total++;
       }
@@ -246,12 +394,29 @@ static bool send_framebuffer_chunked(const uint8_t* data, size_t len) {
     if (!accepted) {
       g_diag.drop_disconnected++;
       g_diag.fallback_reason = FALLBACK_ACK_TIMEOUT;
+      Serial.printf("[lxmf-cam] transfer timeout transfer_id=%lu seq=%u offset=%u elapsed_ms=%lu\n",
+                    (unsigned long)g_transfer_id,
+                    (unsigned)batch_seq_end,
+                    (unsigned)batch_offset,
+                    (unsigned long)(millis() - transfer_started));
       notify_error("ack_timeout");
       return false;
     }
-    offset += n;
-    seq++;
+    if (batch_seq_end < 8 || ((batch_seq_end + 1) % 100) == 0 || offset >= len) {
+      Serial.printf("[lxmf-cam] transfer progress transfer_id=%lu seq=%u/%u bytes_sent=%u/%u elapsed_ms=%lu\n",
+                    (unsigned long)g_transfer_id,
+                    (unsigned)batch_seq_end,
+                    (unsigned)(total_chunks - 1),
+                    (unsigned)offset,
+                    (unsigned)len,
+                    (unsigned long)(millis() - transfer_started));
+    }
   }
+  Serial.printf("[lxmf-cam] transfer complete transfer_id=%lu total_chunks=%u bytes=%u elapsed_ms=%lu\n",
+                (unsigned long)g_transfer_id,
+                (unsigned)total_chunks,
+                (unsigned)len,
+                (unsigned long)(millis() - transfer_started));
   return true;
 }
 
@@ -281,12 +446,13 @@ static bool init_camera() {
   config.fb_location = CAMERA_FB_IN_PSRAM;
 
   if (psramFound()) {
-    config.frame_size = FRAMESIZE_SVGA;
-    config.jpeg_quality = 12;
+    // Prioritize transfer reliability over image quality for BLE transport bring-up.
+    config.frame_size = FRAMESIZE_QQVGA;
+    config.jpeg_quality = 20;
     config.fb_count = 2;
   } else {
-    config.frame_size = FRAMESIZE_VGA;
-    config.jpeg_quality = 14;
+    config.frame_size = FRAMESIZE_QQVGA;
+    config.jpeg_quality = 22;
     config.fb_count = 1;
   }
 
@@ -324,19 +490,28 @@ static void run_capture() {
 }
 
 static void native_node_runtime_tick() {
-  // Integration hook for rns-embedded-core runtime:
-  // - poll inbound transport frames
-  // - advance announce/message scheduler
-  // - persist replay/cursor state checkpoints
   if (!g_native_node_enabled) {
     return;
   }
-  static uint32_t last_announce_ms = 0;
   uint32_t now = millis();
-  if (g_connected && (now - last_announce_ms) >= 30000) {
-    last_announce_ms = now;
-    g_diag.announce_sent++;
-    Serial.println("[lxmf-cam] native announce tick");
+  native_runtime_bridge_tick(now);
+
+  uint8_t outbound[320];
+  size_t outbound_len = 0;
+  if (native_runtime_bridge_take_outbound_wire(outbound, sizeof(outbound), &outbound_len)) {
+    bool emitted = false;
+    if (g_connected) {
+      emitted = notify_native_wire(outbound, outbound_len);
+    }
+    Serial.printf("[lxmf-cam] native outbound bytes=%u backend=%s emitted=%s\n",
+                  (unsigned)outbound_len,
+                  native_runtime_bridge_backend_name(),
+                  emitted ? "yes" : "no");
+  }
+
+  NativeRuntimeBridgeStats stats = native_runtime_bridge_stats();
+  if (stats.outbound_frames > g_diag.announce_sent) {
+    g_diag.announce_sent = stats.outbound_frames;
   }
 }
 
@@ -344,6 +519,7 @@ void setup() {
   Serial.begin(115200);
   delay(100);
   Serial.println("[lxmf-cam] boot");
+  native_runtime_bridge_init(&Serial);
 
   BLEDevice::init(DEVICE_NAME);
   BLEServer* server = BLEDevice::createServer();
@@ -400,8 +576,9 @@ void loop() {
   }
   if (now - last_diag >= 10000) {
     last_diag = now;
+    NativeRuntimeBridgeStats native_stats = native_runtime_bridge_stats();
     Serial.printf(
-        "[lxmf-cam] diag announce=%lu msg_tx=%lu msg_rx=%lu retry=%lu drop_invalid=%lu drop_seq=%lu drop_disc=%lu drop_backpressure=%lu fallback=%s\n",
+        "[lxmf-cam] diag announce=%lu msg_tx=%lu msg_rx=%lu retry=%lu drop_invalid=%lu drop_seq=%lu drop_disc=%lu drop_backpressure=%lu fallback=%s native_backend=%s native_ticks=%lu native_out=%lu native_in=%lu native_seq=%lu\n",
         (unsigned long)g_diag.announce_sent,
         (unsigned long)g_diag.message_tx,
         (unsigned long)g_diag.message_rx,
@@ -410,7 +587,12 @@ void loop() {
         (unsigned long)g_diag.drop_seq_gap,
         (unsigned long)g_diag.drop_disconnected,
         (unsigned long)g_diag.drop_backpressure,
-        fallback_reason_name(g_diag.fallback_reason));
+        fallback_reason_name(g_diag.fallback_reason),
+        native_runtime_bridge_backend_name(),
+        (unsigned long)native_stats.ticks,
+        (unsigned long)native_stats.outbound_frames,
+        (unsigned long)native_stats.inbound_frames,
+        (unsigned long)native_stats.last_sequence);
   }
   native_node_runtime_tick();
   if (g_capture_requested) {
