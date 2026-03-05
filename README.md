@@ -4,8 +4,8 @@ ESP32-CAM firmware scaffold for BLE camera-capture interoperability with `rnx ca
 
 Current status:
 - real OV2640 JPEG capture over BLE camera protocol
-- native embedded runtime bridge scaffold integrated into firmware loop
-- default bridge backend is `stub` until the Rust ESP toolchain and static library link step are added
+- native embedded runtime bridge integrated into firmware loop
+- Rust FFI backend works when `rns-embedded-ffi` is built for `xtensa-esp32-espidf` and linked into the PlatformIO build
 
 ## Protocol
 
@@ -56,7 +56,6 @@ Peripheral name: `LXMF-CAM-STUB`
 ## Build and flash
 
 ```bash
-cd /Users/tommy/Documents/TAK/lxmf-esp32-cam-fw
 pio run
 pio run -t upload
 pio device monitor
@@ -84,12 +83,6 @@ embedded Reticulum runtime.
 - Without that toolchain, the bridge runs a stub backend and logs native tick activity so
   the firmware integration points remain exercised.
 
-Current blocker for real on-device Rust runtime linking:
-
-1. install the ESP Rust toolchain for ESP32/Xtensa or migrate to an ESP target that has a supported Rust flow
-2. build `rns-embedded-ffi` as a static library for that target
-3. add the library/header to the PlatformIO build
-
 PlatformIO now auto-detects the Rust FFI library via `tools/configure_rust_ffi.py`.
 
 It enables the real bridge when either:
@@ -106,7 +99,7 @@ If no valid library/header pair is found, firmware logs and runs with `backend=s
 
 ## Next steps
 
-1. Add the ESP Rust target/toolchain and build `rns-embedded-ffi` for firmware consumption.
-2. Link the generated static library and header into PlatformIO.
-3. Add a host-side native BLE probe/send path for `0x23` wrapped runtime frames.
-4. Populate `crc32` and converge the camera transport with runtime attachment semantics.
+1. Expand the pure `0x23` native wire flow beyond test ping/LXMF ping into fuller host interop.
+2. Bridge native BLE runtime traffic cleanly into standard host Reticulum services.
+3. Populate `crc32` and converge the camera transport with runtime attachment semantics.
+4. Add transport alternatives such as Wi-Fi/TCP once the runtime framing is stable.
