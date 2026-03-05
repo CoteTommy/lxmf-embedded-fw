@@ -68,6 +68,27 @@ struct NativeNodeDiagnostics {
 
 static NativeNodeDiagnostics g_diag;
 
+struct CaptureProfileSettings {
+  framesize_t frame_size;
+  uint8_t jpeg_quality;
+  uint8_t fb_count;
+};
+
+static const char* capture_profile_name(NodeCaptureProfile profile) {
+  switch (profile) {
+    case NODE_CAPTURE_PROFILE_THUMBNAIL:
+      return "thumbnail";
+    case NODE_CAPTURE_PROFILE_BALANCED:
+      return "balanced";
+    case NODE_CAPTURE_PROFILE_HIGH:
+      return "high";
+    case NODE_CAPTURE_PROFILE_VERY_HIGH:
+      return "very_high";
+    default:
+      return "unknown";
+  }
+}
+
 struct AckEvent {
   uint8_t type;
   uint32_t transfer_id;
@@ -81,6 +102,52 @@ static const uint8_t NATIVE_DESTINATION_STUB[16] = {
   0x4C, 0x58, 0x4D, 0x46, 0x2D, 0x45, 0x53, 0x50,
   0x33, 0x32, 0x2D, 0x4E, 0x4F, 0x44, 0x45, 0x01
 };
+
+static CaptureProfileSettings capture_profile_settings(NodeCaptureProfile profile) {
+  const bool has_psram = psramFound();
+  switch (profile) {
+    case NODE_CAPTURE_PROFILE_VERY_HIGH:
+      return CaptureProfileSettings{
+          has_psram ? FRAMESIZE_SVGA : FRAMESIZE_VGA,
+          static_cast<uint8_t>(has_psram ? 12 : 14),
+          static_cast<uint8_t>(has_psram ? 2 : 1),
+      };
+    case NODE_CAPTURE_PROFILE_HIGH:
+      return CaptureProfileSettings{
+          has_psram ? FRAMESIZE_VGA : FRAMESIZE_QVGA,
+          static_cast<uint8_t>(has_psram ? 14 : 16),
+          static_cast<uint8_t>(has_psram ? 2 : 1),
+      };
+    case NODE_CAPTURE_PROFILE_BALANCED:
+      return CaptureProfileSettings{
+          FRAMESIZE_QVGA,
+          static_cast<uint8_t>(has_psram ? 16 : 18),
+          static_cast<uint8_t>(has_psram ? 2 : 1),
+      };
+    case NODE_CAPTURE_PROFILE_THUMBNAIL:
+    default:
+      return CaptureProfileSettings{
+          FRAMESIZE_QQVGA,
+          static_cast<uint8_t>(has_psram ? 20 : 22),
+          static_cast<uint8_t>(has_psram ? 2 : 1),
+      };
+  }
+}
+
+static bool apply_capture_profile(NodeCaptureProfile profile) {
+  sensor_t* sensor = esp_camera_sensor_get();
+  if (sensor == nullptr) {
+    return false;
+  }
+  const CaptureProfileSettings settings = capture_profile_settings(profile);
+  if (sensor->set_framesize(sensor, settings.frame_size) != 0) {
+    return false;
+  }
+  if (sensor->set_quality(sensor, settings.jpeg_quality) != 0) {
+    return false;
+  }
+  return true;
+}
 
 class ServerCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* server) override {
@@ -460,29 +527,10 @@ static bool init_camera() {
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   const bool has_psram = psramFound();
-  switch (g_node_config.capture_profile) {
-    case NODE_CAPTURE_PROFILE_VERY_HIGH:
-      config.frame_size = has_psram ? FRAMESIZE_SVGA : FRAMESIZE_VGA;
-      config.jpeg_quality = has_psram ? 12 : 14;
-      config.fb_count = has_psram ? 2 : 1;
-      break;
-    case NODE_CAPTURE_PROFILE_HIGH:
-      config.frame_size = has_psram ? FRAMESIZE_VGA : FRAMESIZE_QVGA;
-      config.jpeg_quality = has_psram ? 14 : 16;
-      config.fb_count = has_psram ? 2 : 1;
-      break;
-    case NODE_CAPTURE_PROFILE_BALANCED:
-      config.frame_size = FRAMESIZE_QVGA;
-      config.jpeg_quality = has_psram ? 16 : 18;
-      config.fb_count = has_psram ? 2 : 1;
-      break;
-    case NODE_CAPTURE_PROFILE_THUMBNAIL:
-    default:
-      config.frame_size = FRAMESIZE_QQVGA;
-      config.jpeg_quality = has_psram ? 20 : 22;
-      config.fb_count = has_psram ? 2 : 1;
-      break;
-  }
+  const CaptureProfileSettings settings = capture_profile_settings(g_node_config.capture_profile);
+  config.frame_size = settings.frame_size;
+  config.jpeg_quality = settings.jpeg_quality;
+  config.fb_count = settings.fb_count;
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -524,22 +572,36 @@ static void run_capture() {
   }
 }
 
-static void run_tcp_capture() {
+static void run_tcp_capture(const TcpCaptureRequest& request) {
+  const NodeCaptureProfile effective_profile =
+      request.has_override ? request.profile : g_node_config.capture_profile;
+  if (!apply_capture_profile(effective_profile)) {
+    g_diag.drop_invalid++;
+    g_diag.fallback_reason = FALLBACK_CAMERA_ERROR;
+    tcp_node_client_send_capture_result(0x02, 0, 0, 0, 0, effective_profile);
+    lxmf_log_eventf("capture",
+                    "tcp_capture_profile_failed",
+                    "tcp capture profile apply failed profile=%s",
+                    capture_profile_name(effective_profile));
+    return;
+  }
   camera_fb_t* fb = esp_camera_fb_get();
   if (fb == nullptr) {
     g_diag.drop_invalid++;
     g_diag.fallback_reason = FALLBACK_CAMERA_ERROR;
-    tcp_node_client_send_capture_result(0x02, 0, 0, 0, 0);
+    tcp_node_client_send_capture_result(0x02, 0, 0, 0, 0, effective_profile);
     lxmf_log_eventf("capture", "tcp_capture_failed", "tcp capture failed");
     return;
   }
   lxmf_log_eventf("capture",
                   "tcp_capture_start",
-                  "tcp capture frame_bytes=%u width=%u height=%u",
+                  "tcp capture frame_bytes=%u width=%u height=%u profile=%s override=%s",
                   (unsigned)fb->len,
                   (unsigned)fb->width,
-                  (unsigned)fb->height);
-  bool ok = tcp_node_client_send_capture(fb->buf, fb->len, fb->width, fb->height);
+                  (unsigned)fb->height,
+                  capture_profile_name(effective_profile),
+                  request.has_override ? "yes" : "no");
+  bool ok = tcp_node_client_send_capture(fb->buf, fb->len, fb->width, fb->height, effective_profile);
   esp_camera_fb_return(fb);
   if (ok) {
     g_diag.message_tx++;
@@ -705,9 +767,16 @@ void loop() {
   }
   tcp_node_client_tick(now);
   native_node_runtime_tick();
-  if (tcp_node_client_take_capture_request()) {
-    lxmf_log_eventf("capture", "tcp_capture_requested", "tcp capture requested");
-    run_tcp_capture();
+  TcpCaptureRequest tcp_capture_request;
+  if (tcp_node_client_take_capture_request(&tcp_capture_request)) {
+    const NodeCaptureProfile effective_profile =
+        tcp_capture_request.has_override ? tcp_capture_request.profile : g_node_config.capture_profile;
+    lxmf_log_eventf("capture",
+                    "tcp_capture_requested",
+                    "tcp capture requested profile=%s override=%s",
+                    capture_profile_name(effective_profile),
+                    tcp_capture_request.has_override ? "yes" : "no");
+    run_tcp_capture(tcp_capture_request);
   }
   if (g_capture_requested) {
     g_capture_requested = false;

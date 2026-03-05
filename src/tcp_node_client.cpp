@@ -15,6 +15,8 @@ constexpr uint8_t kFrameKindCaptureAttachmentChunk = 0x43;
 constexpr uint8_t kFrameKindCaptureAttachmentDone = 0x44;
 constexpr size_t kPacketHeaderLen = 14;
 constexpr size_t kCaptureChunkPayloadBytes = 512;
+constexpr uint8_t kStructuredCaptureCommandVersion = 1;
+constexpr size_t kStructuredCaptureCommandBytes = 6;
 
 Stream* g_log_stream = nullptr;
 const NodeRuntimeConfig* g_config = nullptr;
@@ -27,8 +29,81 @@ uint32_t g_next_attempt_ms = 0;
 size_t g_backoff_index = 0;
 uint32_t g_next_wifi_retry_ms = 0;
 wl_status_t g_last_wifi_status = WL_IDLE_STATUS;
-bool g_capture_requested = false;
+TcpCaptureRequest g_capture_request;
 uint32_t g_outbound_sequence = 1;
+
+const char* capture_profile_name(NodeCaptureProfile profile) {
+  switch (profile) {
+    case NODE_CAPTURE_PROFILE_THUMBNAIL:
+      return "thumbnail";
+    case NODE_CAPTURE_PROFILE_BALANCED:
+      return "balanced";
+    case NODE_CAPTURE_PROFILE_HIGH:
+      return "high";
+    case NODE_CAPTURE_PROFILE_VERY_HIGH:
+      return "very_high";
+    default:
+      return "unknown";
+  }
+}
+
+bool decode_capture_profile(uint8_t raw, NodeCaptureProfile* profile, bool* has_override) {
+  if (profile == nullptr || has_override == nullptr) {
+    return false;
+  }
+  switch (raw) {
+    case 0:
+      *profile = NODE_CAPTURE_PROFILE_HIGH;
+      *has_override = false;
+      return true;
+    case 1:
+      *profile = NODE_CAPTURE_PROFILE_THUMBNAIL;
+      *has_override = true;
+      return true;
+    case 2:
+      *profile = NODE_CAPTURE_PROFILE_BALANCED;
+      *has_override = true;
+      return true;
+    case 3:
+      *profile = NODE_CAPTURE_PROFILE_HIGH;
+      *has_override = true;
+      return true;
+    case 4:
+      *profile = NODE_CAPTURE_PROFILE_VERY_HIGH;
+      *has_override = true;
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool parse_capture_request_payload(const uint8_t* payload, size_t payload_len, TcpCaptureRequest* request) {
+  if (payload == nullptr || request == nullptr || payload_len == 0) {
+    return false;
+  }
+
+  *request = TcpCaptureRequest{};
+  request->pending = true;
+  request->profile = NODE_CAPTURE_PROFILE_HIGH;
+  request->has_override = false;
+
+  if (payload_len == 7 && memcmp(payload, "capture", 7) == 0) {
+    return true;
+  }
+
+  if (payload_len < kStructuredCaptureCommandBytes || payload[0] != kStructuredCaptureCommandVersion) {
+    return false;
+  }
+
+  NodeCaptureProfile profile = NODE_CAPTURE_PROFILE_HIGH;
+  bool has_override = false;
+  if (!decode_capture_profile(payload[5], &profile, &has_override)) {
+    return false;
+  }
+  request->profile = profile;
+  request->has_override = has_override;
+  return true;
+}
 
 const char* wifi_status_name(wl_status_t status) {
   switch (status) {
@@ -234,9 +309,17 @@ bool handle_inbound_packet_frame(const uint8_t* bytes, size_t len) {
   }
   log_line("[lxmf-net] inbound frame kind=0x%02x payload_bytes=%u", (unsigned)kind, (unsigned)payload_len);
   if (kind == kFrameKindCaptureCommand) {
-    g_capture_requested = true;
+    TcpCaptureRequest request;
+    if (!parse_capture_request_payload(bytes + kPacketHeaderLen, payload_len, &request)) {
+      log_line("[lxmf-net] capture command rejected payload_bytes=%u", (unsigned)payload_len);
+      return false;
+    }
+    g_capture_request = request;
     g_stats.rx_frames++;
-    log_line("[lxmf-net] capture command received payload_bytes=%u", (unsigned)payload_len);
+    log_line("[lxmf-net] capture command received payload_bytes=%u profile=%s override=%s",
+             (unsigned)payload_len,
+             request.has_override ? capture_profile_name(request.profile) : "default",
+             request.has_override ? "yes" : "no");
     return true;
   }
   if (native_runtime_bridge_push_inbound_wire(bytes, len)) {
@@ -291,7 +374,7 @@ void tcp_node_client_init(Stream* log_stream, const NodeRuntimeConfig* config) {
   g_backoff_index = 0;
   g_next_wifi_retry_ms = 0;
   g_last_wifi_status = WL_IDLE_STATUS;
-  g_capture_requested = false;
+  g_capture_request = TcpCaptureRequest{};
   g_outbound_sequence = 1;
 }
 
@@ -328,10 +411,13 @@ bool tcp_node_client_connected() {
   return g_stats.tcp_connected && g_client.connected();
 }
 
-bool tcp_node_client_take_capture_request() {
-  bool requested = g_capture_requested;
-  g_capture_requested = false;
-  return requested;
+bool tcp_node_client_take_capture_request(TcpCaptureRequest* request) {
+  if (request == nullptr || !g_capture_request.pending) {
+    return false;
+  }
+  *request = g_capture_request;
+  g_capture_request = TcpCaptureRequest{};
+  return true;
 }
 
 bool tcp_node_client_send_capture_result(
@@ -339,8 +425,9 @@ bool tcp_node_client_send_capture_result(
     uint32_t total_bytes,
     uint16_t chunk_bytes,
     uint16_t width,
-    uint16_t height) {
-  uint8_t result_payload[11] = {
+    uint16_t height,
+    NodeCaptureProfile effective_profile) {
+  uint8_t result_payload[12] = {
       status,
       static_cast<uint8_t>(total_bytes & 0xFF),
       static_cast<uint8_t>((total_bytes >> 8) & 0xFF),
@@ -352,11 +439,17 @@ bool tcp_node_client_send_capture_result(
       static_cast<uint8_t>((width >> 8) & 0xFF),
       static_cast<uint8_t>(height & 0xFF),
       static_cast<uint8_t>((height >> 8) & 0xFF),
+      static_cast<uint8_t>(effective_profile),
   };
   return write_packet_frame(kFrameKindCaptureResult, result_payload, sizeof(result_payload));
 }
 
-bool tcp_node_client_send_capture(const uint8_t* jpeg, size_t len, uint16_t width, uint16_t height) {
+bool tcp_node_client_send_capture(
+    const uint8_t* jpeg,
+    size_t len,
+    uint16_t width,
+    uint16_t height,
+    NodeCaptureProfile effective_profile) {
   if (!tcp_node_client_connected() || jpeg == nullptr || len == 0) {
     return false;
   }
@@ -365,7 +458,8 @@ bool tcp_node_client_send_capture(const uint8_t* jpeg, size_t len, uint16_t widt
       static_cast<uint16_t>((len + kCaptureChunkPayloadBytes - 1) / kCaptureChunkPayloadBytes);
   const uint16_t chunk_bytes = static_cast<uint16_t>(kCaptureChunkPayloadBytes);
 
-  if (!tcp_node_client_send_capture_result(0x00, static_cast<uint32_t>(len), chunk_bytes, width, height)) {
+  if (!tcp_node_client_send_capture_result(
+          0x00, static_cast<uint32_t>(len), chunk_bytes, width, height, effective_profile)) {
     return false;
   }
 

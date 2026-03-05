@@ -16,17 +16,25 @@ struct TcpNodeClientStats {
   uint32_t rx_frames = 0;
 };
 
+struct TcpCaptureRequest {
+  bool pending = false;
+  bool has_override = false;
+  NodeCaptureProfile profile = NODE_CAPTURE_PROFILE_HIGH;
+};
+
 void tcp_node_client_init(Stream* log_stream, const NodeRuntimeConfig* config);
 void tcp_node_client_tick(uint32_t now_ms);
 TcpNodeClientStats tcp_node_client_stats();
 bool tcp_node_client_connected();
-bool tcp_node_client_take_capture_request();
+bool tcp_node_client_take_capture_request(TcpCaptureRequest* request);
 bool tcp_node_client_send_capture_result(uint8_t status,
                                          uint32_t total_bytes,
                                          uint16_t chunk_bytes,
                                          uint16_t width,
-                                         uint16_t height);
+                                         uint16_t height,
+                                         NodeCaptureProfile effective_profile);
 bool tcp_node_client_send_capture(const uint8_t* jpeg,
                                   size_t len,
                                   uint16_t width,
-                                  uint16_t height);
+                                  uint16_t height,
+                                  NodeCaptureProfile effective_profile);

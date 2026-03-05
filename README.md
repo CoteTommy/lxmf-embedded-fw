@@ -163,7 +163,7 @@ LXMF_RUST_FFI_INCLUDE=../LXMF-rs/crates/libs/rns-embedded-ffi/include \
 pio run -t upload
 ```
 
-BLE remains active for provisioning/recovery while TCP client mode is being brought up.
+BLE is disabled in TCP node modes to preserve Wi-Fi memory headroom. It remains the provisioning/recovery transport in `ble_only` mode.
 
 Capture profiles:
 
@@ -180,6 +180,14 @@ Capture profiles:
 - `very_high`
   - pushes resolution/quality above the default
   - `SVGA` with PSRAM, `VGA` otherwise
+
+TCP capture requests can also override the profile per request without reflashing. Host tooling now supports:
+
+- `default`
+- `thumbnail`
+- `balanced`
+- `high`
+- `very_high`
 
 ## Next steps
 
