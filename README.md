@@ -62,6 +62,24 @@ pio run -t upload
 pio device monitor
 ```
 
+## Log formats
+
+Default serial logs use readable text lines.
+
+Optional build flags in `platformio.ini`:
+
+- `-DLXMF_LOG_FORMAT_JSON=1`
+  - emit JSONL only
+- `-DLXMF_LOG_FORMAT_BOTH=1`
+  - emit text and JSONL for each migrated log event
+
+Current structured logging coverage includes:
+
+- node boot/config
+- BLE mode/connection state
+- native runtime init/state
+- Wi-Fi/TCP connection lifecycle and diagnostics
+
 ## Host smoke command
 
 After flash, run from `LXMF-rs` repo:
@@ -119,7 +137,19 @@ Current configuration sources:
    - `LXMF_TCP_HOST=host-or-ip`
    - `LXMF_TCP_PORT=7443`
 
-Example:
+Recommended local workflow:
+
+```bash
+cp .env.example .env.local
+```
+
+Edit `.env.local` with your real values, then run:
+
+```bash
+./tools/flash_tcp_client.sh
+```
+
+Manual example:
 
 ```bash
 LXMF_NODE_MODE_TCP_CLIENT=1 \

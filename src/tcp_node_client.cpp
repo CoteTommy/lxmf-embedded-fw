@@ -2,6 +2,7 @@
 
 #include <WiFi.h>
 
+#include "lxmf_log.h"
 #include "native_runtime_bridge.h"
 
 namespace {
@@ -18,17 +19,37 @@ size_t g_recv_len = 0;
 size_t g_expected_len = 0;
 uint32_t g_next_attempt_ms = 0;
 size_t g_backoff_index = 0;
+uint32_t g_next_wifi_retry_ms = 0;
+wl_status_t g_last_wifi_status = WL_IDLE_STATUS;
+
+const char* wifi_status_name(wl_status_t status) {
+  switch (status) {
+    case WL_IDLE_STATUS:
+      return "idle";
+    case WL_NO_SSID_AVAIL:
+      return "no_ssid";
+    case WL_SCAN_COMPLETED:
+      return "scan_completed";
+    case WL_CONNECTED:
+      return "connected";
+    case WL_CONNECT_FAILED:
+      return "connect_failed";
+    case WL_CONNECTION_LOST:
+      return "connection_lost";
+    case WL_DISCONNECTED:
+      return "disconnected";
+    default:
+      return "unknown";
+  }
+}
 
 void log_line(const char* fmt, ...) {
-  if (g_log_stream == nullptr) {
-    return;
-  }
   char buf[192];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  g_log_stream->println(buf);
+  lxmf_log_eventf("net", "log", "%s", buf);
 }
 
 bool mode_enabled() {
@@ -54,16 +75,34 @@ void mark_transport_down() {
 void ensure_wifi() {
   if (!mode_enabled() || !config_ready()) {
     g_stats.wifi_connected = false;
+    g_stats.wifi_status = static_cast<uint8_t>(WL_DISCONNECTED);
     return;
   }
   wl_status_t status = WiFi.status();
+  wl_status_t previous_status = g_last_wifi_status;
+  g_stats.wifi_status = static_cast<uint8_t>(status);
+  if (status != g_last_wifi_status) {
+    log_line("[lxmf-net] wifi status=%s code=%d", wifi_status_name(status), static_cast<int>(status));
+    g_last_wifi_status = status;
+  }
   if (status == WL_CONNECTED) {
     g_stats.wifi_connected = true;
+    if (previous_status != WL_CONNECTED) {
+      log_line("[lxmf-net] wifi connected ip=%s rssi=%d", WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    }
     return;
   }
   g_stats.wifi_connected = false;
+  uint32_t now_ms = millis();
+  if (now_ms < g_next_wifi_retry_ms) {
+    return;
+  }
   WiFi.mode(WIFI_STA);
+  WiFi.setAutoReconnect(true);
+  g_stats.wifi_connect_attempts++;
+  log_line("[lxmf-net] wifi begin ssid=%s attempt=%lu", g_config->wifi_ssid, (unsigned long)g_stats.wifi_connect_attempts);
   WiFi.begin(g_config->wifi_ssid, g_config->wifi_password);
+  g_next_wifi_retry_ms = now_ms + 10000;
 }
 
 void connect_tcp(uint32_t now_ms) {
@@ -74,6 +113,7 @@ void connect_tcp(uint32_t now_ms) {
     return;
   }
 
+  g_stats.tcp_connect_attempts++;
   log_line("[lxmf-net] tcp connect host=%s port=%u", g_config->tcp_host, g_config->tcp_port);
   if (g_client.connect(g_config->tcp_host, g_config->tcp_port)) {
     g_stats.tcp_connected = true;
@@ -163,6 +203,8 @@ void tcp_node_client_init(Stream* log_stream, const NodeRuntimeConfig* config) {
   g_expected_len = 0;
   g_next_attempt_ms = 0;
   g_backoff_index = 0;
+  g_next_wifi_retry_ms = 0;
+  g_last_wifi_status = WL_IDLE_STATUS;
 }
 
 void tcp_node_client_tick(uint32_t now_ms) {

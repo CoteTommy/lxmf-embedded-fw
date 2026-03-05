@@ -45,10 +45,10 @@ bool node_runtime_config_load(NodeRuntimeConfig* config) {
   }
 
   *config = NodeRuntimeConfig{};
-  apply_compile_time_defaults(config);
 
   Preferences prefs;
   if (!prefs.begin(PREF_NAMESPACE, true)) {
+    apply_compile_time_defaults(config);
     return false;
   }
 
@@ -60,6 +60,7 @@ bool node_runtime_config_load(NodeRuntimeConfig* config) {
   prefs.getString("tcp_host", config->tcp_host, sizeof(config->tcp_host));
   config->tcp_port = prefs.getUShort("tcp_port", config->tcp_port);
   prefs.end();
+  apply_compile_time_defaults(config);
   return true;
 }
 

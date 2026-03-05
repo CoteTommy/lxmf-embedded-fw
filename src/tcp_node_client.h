@@ -8,7 +8,10 @@
 struct TcpNodeClientStats {
   bool wifi_connected = false;
   bool tcp_connected = false;
+  uint8_t wifi_status = 0;
+  uint32_t wifi_connect_attempts = 0;
   uint32_t reconnects = 0;
+  uint32_t tcp_connect_attempts = 0;
   uint32_t tx_frames = 0;
   uint32_t rx_frames = 0;
 };

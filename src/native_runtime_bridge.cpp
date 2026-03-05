@@ -1,4 +1,5 @@
 #include "native_runtime_bridge.h"
+#include "lxmf_log.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -45,28 +46,22 @@ RnsEmbeddedStatus ensure_node() {
   return g_node == nullptr ? RNS_EMBEDDED_STATUS_INVALID_STATE : RNS_EMBEDDED_STATUS_OK;
 }
 
-void log_line(const char* fmt, ...) {
-  if (g_log_stream == nullptr) {
-    return;
-  }
+void log_line(const char* event, const char* fmt, ...) {
   char buf[160];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  g_log_stream->println(buf);
+  lxmf_log_eventf("native", event, "%s", buf);
 }
 #else
-void log_line(const char* fmt, ...) {
-  if (g_log_stream == nullptr) {
-    return;
-  }
+void log_line(const char* event, const char* fmt, ...) {
   char buf[160];
   va_list args;
   va_start(args, fmt);
   vsnprintf(buf, sizeof(buf), fmt, args);
   va_end(args);
-  g_log_stream->println(buf);
+  lxmf_log_eventf("native", event, "%s", buf);
 }
 #endif
 
@@ -85,9 +80,9 @@ void native_runtime_bridge_init(Stream* log_stream) {
     g_node = nullptr;
   }
   RnsEmbeddedStatus status = ensure_node();
-  log_line("[lxmf-native] init backend=%s status=%d", native_runtime_bridge_backend_name(), (int)status);
+  log_line("init", "init backend=%s status=%d", native_runtime_bridge_backend_name(), (int)status);
 #else
-  log_line("[lxmf-native] init backend=%s", native_runtime_bridge_backend_name());
+  log_line("init", "init backend=%s", native_runtime_bridge_backend_name());
 #endif
 }
 
@@ -166,14 +161,14 @@ void native_runtime_bridge_tick(uint32_t now_ms) {
       break;
   }
   if (status != RNS_EMBEDDED_STATUS_OK && g_log_stream != nullptr) {
-    log_line("[lxmf-native] tick status=%d", (int)status);
+    log_line("tick_status", "tick status=%d", (int)status);
   }
 #else
   if (g_connected && (now_ms - g_last_announce_ms) >= 30000) {
     g_last_announce_ms = now_ms;
     g_stats.outbound_frames++;
     g_stats.last_sequence++;
-    log_line("[lxmf-native] stub announce sequence=%lu", (unsigned long)g_stats.last_sequence);
+    log_line("stub_announce", "stub announce sequence=%lu", (unsigned long)g_stats.last_sequence);
   }
 #endif
 }
@@ -189,7 +184,7 @@ bool native_runtime_bridge_push_inbound_wire(const uint8_t* data, size_t len) {
   }
   return rns_embedded_node_push_inbound_wire(g_node, data, len) == RNS_EMBEDDED_STATUS_OK;
 #else
-  log_line("[lxmf-native] stub inbound bytes=%u", (unsigned)len);
+  log_line("stub_inbound", "stub inbound bytes=%u", (unsigned)len);
   return true;
 #endif
 }
@@ -211,13 +206,14 @@ bool native_runtime_bridge_queue_message(const uint8_t destination[16], const ui
     return true;
   }
   if (g_log_stream != nullptr) {
-    log_line("[lxmf-native] queue_message status=%d", (int)status);
+    log_line("queue_message_status", "queue_message status=%d", (int)status);
   }
   return false;
 #else
   g_stats.last_sequence++;
   log_line(
-      "[lxmf-native] stub queue_message bytes=%u sequence=%lu",
+      "stub_queue_message",
+      "stub queue_message bytes=%u sequence=%lu",
       (unsigned)len,
       (unsigned long)g_stats.last_sequence);
   return true;

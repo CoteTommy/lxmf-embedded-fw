@@ -9,6 +9,7 @@
 #include <esp_bt_device.h>
 #include <esp_camera.h>
 
+#include "lxmf_log.h"
 #include "native_runtime_bridge.h"
 #include "node_runtime_config.h"
 #include "tcp_node_client.h"
@@ -44,6 +45,7 @@ static NodeRuntimeConfig g_node_config;
 static uint32_t g_transfer_id = 1;
 static bool g_connected = false;
 static bool g_native_node_enabled = true;
+static bool g_ble_transport_enabled = false;
 
 enum FallbackReasonCode : uint8_t {
   FALLBACK_NONE = 0,
@@ -88,7 +90,7 @@ class ServerCallbacks : public BLEServerCallbacks {
     if (g_node_config.node_mode == NATIVE_NODE_MODE_BLE_ONLY) {
       native_runtime_bridge_set_link_state(true);
     }
-    Serial.println("[lxmf-cam] ble client connected");
+    lxmf_log_eventf("ble", "client_connected", "ble client connected");
   }
 
   void onDisconnect(BLEServer* server) override {
@@ -98,9 +100,11 @@ class ServerCallbacks : public BLEServerCallbacks {
     if (g_node_config.node_mode == NATIVE_NODE_MODE_BLE_ONLY) {
       native_runtime_bridge_set_link_state(false);
     }
-    Serial.println("[lxmf-cam] ble client disconnected");
-    BLEDevice::startAdvertising();
-    Serial.println("[lxmf-cam] advertising restarted");
+    lxmf_log_eventf("ble", "client_disconnected", "ble client disconnected");
+    if (g_ble_transport_enabled) {
+      BLEDevice::startAdvertising();
+      lxmf_log_eventf("ble", "advertising_restarted", "advertising restarted");
+    }
   }
 };
 
@@ -507,6 +511,14 @@ static void native_node_runtime_tick() {
   uint32_t now = millis();
   native_runtime_bridge_tick(now);
 
+  if (g_node_config.node_mode != NATIVE_NODE_MODE_BLE_ONLY) {
+    NativeRuntimeBridgeStats stats = native_runtime_bridge_stats();
+    if (stats.outbound_frames > g_diag.announce_sent) {
+      g_diag.announce_sent = stats.outbound_frames;
+    }
+    return;
+  }
+
   uint8_t outbound[320];
   size_t outbound_len = 0;
   if (native_runtime_bridge_take_outbound_wire(outbound, sizeof(outbound), &outbound_len)) {
@@ -529,58 +541,63 @@ static void native_node_runtime_tick() {
 void setup() {
   Serial.begin(115200);
   delay(100);
-  Serial.println("[lxmf-cam] boot");
+  lxmf_log_init(&Serial);
+  lxmf_log_eventf("node", "boot", "boot");
   node_runtime_config_load(&g_node_config);
   native_runtime_bridge_init(&Serial);
   native_runtime_bridge_set_node_mode(g_node_config.node_mode);
   native_runtime_bridge_set_network_provisioned(node_runtime_config_has_wifi(g_node_config));
   native_runtime_bridge_set_ble_recovery_active(false);
   tcp_node_client_init(&Serial, &g_node_config);
-  Serial.printf("[lxmf-node] config mode=%s wifi=%s tcp_host=%s tcp_port=%u\n",
-                node_runtime_config_mode_name(g_node_config),
-                node_runtime_config_has_wifi(g_node_config) ? "set" : "unset",
-                node_runtime_config_has_tcp_client_target(g_node_config) ? g_node_config.tcp_host : "<unset>",
-                g_node_config.tcp_port);
+  lxmf_log_eventf("node",
+                  "config",
+                  "config mode=%s wifi=%s tcp_host=%s tcp_port=%u",
+                  node_runtime_config_mode_name(g_node_config),
+                  node_runtime_config_has_wifi(g_node_config) ? "set" : "unset",
+                  node_runtime_config_has_tcp_client_target(g_node_config) ? g_node_config.tcp_host : "<unset>",
+                  g_node_config.tcp_port);
 
-  BLEDevice::init(DEVICE_NAME);
-  BLEServer* server = BLEDevice::createServer();
-  server->setCallbacks(new ServerCallbacks());
-  BLEService* service = server->createService(SERVICE_UUID);
+  g_ble_transport_enabled = (g_node_config.node_mode == NATIVE_NODE_MODE_BLE_ONLY);
+  if (g_ble_transport_enabled) {
+    BLEDevice::init(DEVICE_NAME);
+    BLEServer* server = BLEDevice::createServer();
+    server->setCallbacks(new ServerCallbacks());
+    BLEService* service = server->createService(SERVICE_UUID);
 
-  BLECharacteristic* write_char = service->createCharacteristic(
-      WRITE_CHAR_UUID,
-      BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
-  g_notify = service->createCharacteristic(
-      NOTIFY_CHAR_UUID,
-      BLECharacteristic::PROPERTY_NOTIFY);
+    BLECharacteristic* write_char = service->createCharacteristic(
+        WRITE_CHAR_UUID,
+        BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+    g_notify = service->createCharacteristic(
+        NOTIFY_CHAR_UUID,
+        BLECharacteristic::PROPERTY_NOTIFY);
 
-  g_notify->addDescriptor(new BLE2902());
-  write_char->setCallbacks(new CaptureWriteCallbacks());
+    g_notify->addDescriptor(new BLE2902());
+    write_char->setCallbacks(new CaptureWriteCallbacks());
 
-  service->start();
+    service->start();
 
-  BLEAdvertising* advertising = BLEDevice::getAdvertising();
-  advertising->addServiceUUID(SERVICE_UUID);
-  BLEAdvertisementData scan_data;
-  std::string manufacturer_payload(MANUFACTURER_MARKER);
-  scan_data.setManufacturerData(manufacturer_payload);
-  advertising->setScanResponseData(scan_data);
-  advertising->setScanResponse(true);
-  advertising->setMinPreferred(0x06);
-  advertising->setMinPreferred(0x12);
-  BLEDevice::startAdvertising();
+    BLEAdvertising* advertising = BLEDevice::getAdvertising();
+    advertising->addServiceUUID(SERVICE_UUID);
+    BLEAdvertisementData scan_data;
+    std::string manufacturer_payload(MANUFACTURER_MARKER);
+    scan_data.setManufacturerData(manufacturer_payload);
+    advertising->setScanResponseData(scan_data);
+    advertising->setScanResponse(true);
+    advertising->setMinPreferred(0x06);
+    advertising->setMinPreferred(0x12);
+    BLEDevice::startAdvertising();
 
-  Serial.println("[lxmf-cam] advertising");
-  Serial.println(DEVICE_NAME);
-  Serial.println(SERVICE_UUID);
-  Serial.println(WRITE_CHAR_UUID);
-  Serial.println(NOTIFY_CHAR_UUID);
-  Serial.print("manufacturer_marker=");
-  Serial.println(MANUFACTURER_MARKER);
-  const uint8_t* mac = esp_bt_dev_get_address();
-  if (mac != nullptr) {
-    Serial.printf("ble_mac=%02X:%02X:%02X:%02X:%02X:%02X\n",
-                  mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    lxmf_log_eventf("ble", "advertising", "advertising name=%s service=%s write=%s notify=%s manufacturer_marker=%s",
+                    DEVICE_NAME, SERVICE_UUID, WRITE_CHAR_UUID, NOTIFY_CHAR_UUID, MANUFACTURER_MARKER);
+    const uint8_t* mac = esp_bt_dev_get_address();
+    if (mac != nullptr) {
+      lxmf_log_eventf("ble",
+                      "mac",
+                      "ble_mac=%02X:%02X:%02X:%02X:%02X:%02X",
+                      mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+  } else {
+    lxmf_log_eventf("ble", "disabled", "disabled for tcp node mode");
   }
   init_camera();
 }
@@ -591,16 +608,20 @@ void loop() {
   uint32_t now = millis();
   if (now - last_heartbeat >= 5000) {
     last_heartbeat = now;
-    Serial.printf("[lxmf-cam] heartbeat connected=%s transfer_id=%lu\n",
-                  g_connected ? "yes" : "no",
-                  (unsigned long)g_transfer_id);
+    lxmf_log_eventf("capture",
+                    "heartbeat",
+                    "heartbeat connected=%s transfer_id=%lu",
+                    g_connected ? "yes" : "no",
+                    (unsigned long)g_transfer_id);
   }
   if (now - last_diag >= 10000) {
     last_diag = now;
     NativeRuntimeBridgeStats native_stats = native_runtime_bridge_stats();
     TcpNodeClientStats tcp_stats = tcp_node_client_stats();
-    Serial.printf(
-        "[lxmf-cam] diag announce=%lu msg_tx=%lu msg_rx=%lu retry=%lu drop_invalid=%lu drop_seq=%lu drop_disc=%lu drop_backpressure=%lu fallback=%s native_backend=%s native_ticks=%lu native_out=%lu native_in=%lu native_seq=%lu\n",
+    lxmf_log_eventf(
+        "capture",
+        "diag",
+        "diag announce=%lu msg_tx=%lu msg_rx=%lu retry=%lu drop_invalid=%lu drop_seq=%lu drop_disc=%lu drop_backpressure=%lu fallback=%s native_backend=%s native_ticks=%lu native_out=%lu native_in=%lu native_seq=%lu",
         (unsigned long)g_diag.announce_sent,
         (unsigned long)g_diag.message_tx,
         (unsigned long)g_diag.message_rx,
@@ -615,16 +636,23 @@ void loop() {
         (unsigned long)native_stats.outbound_frames,
         (unsigned long)native_stats.inbound_frames,
         (unsigned long)native_stats.last_sequence);
-    Serial.printf(
-        "[lxmf-native] state mode=%s lifecycle=%s provisioned=%s ble_recovery=%s\n",
+    lxmf_log_eventf(
+        "native",
+        "state",
+        "state mode=%s lifecycle=%s provisioned=%s ble_recovery=%s",
         native_runtime_bridge_mode_name(),
         native_runtime_bridge_lifecycle_name(),
         native_stats.network_provisioned ? "yes" : "no",
         native_stats.ble_recovery_active ? "yes" : "no");
-    Serial.printf(
-        "[lxmf-net] wifi=%s tcp=%s reconnects=%lu tx_frames=%lu rx_frames=%lu\n",
+    lxmf_log_eventf(
+        "net",
+        "diag",
+        "wifi=%s tcp=%s wifi_status=%u wifi_attempts=%lu tcp_attempts=%lu reconnects=%lu tx_frames=%lu rx_frames=%lu",
         tcp_stats.wifi_connected ? "up" : "down",
         tcp_stats.tcp_connected ? "up" : "down",
+        (unsigned)tcp_stats.wifi_status,
+        (unsigned long)tcp_stats.wifi_connect_attempts,
+        (unsigned long)tcp_stats.tcp_connect_attempts,
         (unsigned long)tcp_stats.reconnects,
         (unsigned long)tcp_stats.tx_frames,
         (unsigned long)tcp_stats.rx_frames);

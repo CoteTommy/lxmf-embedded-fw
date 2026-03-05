@@ -6,13 +6,20 @@ from pathlib import Path
 Import("env")
 
 
+def normalize_path(project_dir: Path, raw: str) -> Path:
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        path = (project_dir / path).resolve()
+    return path.resolve()
+
+
 def candidate_pairs(project_dir: Path) -> list[tuple[Path, Path]]:
     pairs: list[tuple[Path, Path]] = []
 
     env_lib = os.environ.get("LXMF_RUST_FFI_LIB")
     env_include = os.environ.get("LXMF_RUST_FFI_INCLUDE")
     if env_lib and env_include:
-        pairs.append((Path(env_lib), Path(env_include)))
+        pairs.append((normalize_path(project_dir, env_lib), normalize_path(project_dir, env_include)))
 
     sibling_repo = project_dir.parent / "LXMF-rs"
     ffi_include = sibling_repo / "crates" / "libs" / "rns-embedded-ffi" / "include"
