@@ -357,21 +357,25 @@ static bool parse_bool_string(const String& value, bool* out) {
   return false;
 }
 
-static String provisioning_status_text() {
+static String provisioning_status_text_for(const NodeRuntimeConfig& config) {
   String message = "ok";
   message += " mode=";
-  message += node_runtime_config_mode_name(g_node_config);
+  message += node_runtime_config_mode_name(config);
   message += " wifi_set=";
-  message += node_runtime_config_has_wifi(g_node_config) ? "yes" : "no";
+  message += node_runtime_config_has_wifi(config) ? "yes" : "no";
   message += " tcp_host=";
-  message += node_runtime_config_has_tcp_client_target(g_node_config) ? g_node_config.tcp_host : "<unset>";
+  message += node_runtime_config_has_tcp_client_target(config) ? config.tcp_host : "<unset>";
   message += " tcp_port=";
-  message += String(g_node_config.tcp_port);
+  message += String(config.tcp_port);
   message += " capture_profile=";
-  message += node_runtime_capture_profile_name(g_node_config);
+  message += node_runtime_capture_profile_name(config);
   message += " ble_recovery=";
-  message += g_node_config.ble_recovery_enabled ? "yes" : "no";
+  message += config.ble_recovery_enabled ? "yes" : "no";
   return message;
+}
+
+static String provisioning_status_text() {
+  return provisioning_status_text_for(g_node_config);
 }
 
 static bool apply_provisioning_set(const String& command_body, String* response) {
@@ -464,11 +468,14 @@ static bool apply_provisioning_set(const String& command_body, String* response)
     *response = "error save_failed";
     return false;
   }
-  g_node_config = updated;
-  native_runtime_bridge_set_node_mode(g_node_config.node_mode);
-  native_runtime_bridge_set_network_provisioned(node_runtime_config_has_wifi(g_node_config));
 
-  *response = provisioning_status_text();
+  if (!restart_required) {
+    g_node_config = updated;
+    native_runtime_bridge_set_node_mode(g_node_config.node_mode);
+    native_runtime_bridge_set_network_provisioned(node_runtime_config_has_wifi(g_node_config));
+  }
+
+  *response = provisioning_status_text_for(updated);
   if (restart_required) {
     *response += " restart_required=yes";
   } else {
