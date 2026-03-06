@@ -20,9 +20,6 @@ fi
 
 required=(
   LXMF_NODE_MODE_TCP_CLIENT
-  LXMF_WIFI_SSID
-  LXMF_WIFI_PASSWORD
-  LXMF_TCP_HOST
   LXMF_TCP_PORT
   LXMF_RUST_FFI_LIB
   LXMF_RUST_FFI_INCLUDE
@@ -38,8 +35,21 @@ done
 if (( ${#missing[@]} > 0 )); then
   printf 'Missing required environment values:\n' >&2
   printf '  %s\n' "${missing[@]}" >&2
-  printf '\nCreate .env.local from .env.example or export them before running.\n' >&2
   exit 1
+fi
+
+network_override_enabled=0
+if [[ -n "${LXMF_WIFI_SSID:-}" || -n "${LXMF_WIFI_PASSWORD:-}" || -n "${LXMF_TCP_HOST:-}" ]]; then
+  network_override_enabled=1
+fi
+
+if (( network_override_enabled )); then
+  if [[ -z "${LXMF_WIFI_SSID:-}" || -z "${LXMF_WIFI_PASSWORD:-}" || -z "${LXMF_TCP_HOST:-}" ]]; then
+    printf 'Partial network override detected.\n' >&2
+    printf 'When overriding stored config, set all of:\n' >&2
+    printf '  LXMF_WIFI_SSID\n  LXMF_WIFI_PASSWORD\n  LXMF_TCP_HOST\n' >&2
+    exit 1
+  fi
 fi
 
 if [[ ! "${LXMF_TCP_PORT}" =~ ^[0-9]+$ ]]; then
@@ -57,7 +67,11 @@ case "${LXMF_CAPTURE_PROFILE}" in
     ;;
 esac
 
-echo "[flash-tcp-client] mode=tcp_client host=${LXMF_TCP_HOST} port=${LXMF_TCP_PORT} ssid=${LXMF_WIFI_SSID} profile=${LXMF_CAPTURE_PROFILE}"
+if (( network_override_enabled )); then
+  echo "[flash-tcp-client] mode=tcp_client host=${LXMF_TCP_HOST} port=${LXMF_TCP_PORT} ssid=${LXMF_WIFI_SSID} profile=${LXMF_CAPTURE_PROFILE} source=env"
+else
+  echo "[flash-tcp-client] mode=tcp_client host=<stored> port=<stored> ssid=<stored> profile=${LXMF_CAPTURE_PROFILE} source=stored-config"
+fi
 echo "[flash-tcp-client] rust_ffi_lib=${LXMF_RUST_FFI_LIB}"
 
 pio run -t clean

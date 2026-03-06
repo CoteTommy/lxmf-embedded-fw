@@ -171,7 +171,18 @@ Recommended local workflow:
 cp .env.example .env.local
 ```
 
-Edit `.env.local` with your real values, then run:
+First-time bring-up:
+
+- set Wi-Fi/TCP values in `.env.local`
+- flash once
+- optionally reprovision later over BLE
+
+Normal reflash after provisioning:
+
+- keep only non-network settings such as `LXMF_CAPTURE_PROFILE` in `.env.local`
+- the flash script will reuse stored device config if Wi‑Fi/TCP overrides are unset
+
+Flash with the local env file:
 
 ```bash
 ./tools/flash_tcp_client.sh
@@ -191,6 +202,10 @@ pio run -t upload
 ```
 
 BLE is disabled in TCP node modes to preserve Wi-Fi memory headroom. It remains the provisioning/recovery transport in `ble_only` mode.
+
+If `LXMF_WIFI_SSID`, `LXMF_WIFI_PASSWORD`, and `LXMF_TCP_HOST` are omitted when running
+`./tools/flash_tcp_client.sh`, the build keeps using the device's stored configuration instead of
+forcing compile-time network overrides.
 
 Capture profiles:
 
