@@ -31,6 +31,8 @@ static const uint8_t FRAME_NACK = 0x08;
 static const uint8_t FRAME_NATIVE_ANNOUNCE_REQ = 0x21;
 static const uint8_t FRAME_NATIVE_MESSAGE_TX_REQ = 0x22;
 static const uint8_t FRAME_NATIVE_WIRE = 0x23;
+static const uint8_t FRAME_PROVISION_CMD = 0x24;
+static const uint8_t FRAME_PROVISION_RESP = 0x25;
 static const uint16_t BLE_CHUNK_PAYLOAD_BYTES = 5;
 static const uint8_t BLE_ACK_EVERY_CHUNKS = 4;
 static const uint32_t BLE_ACK_TIMEOUT_MS = 900;
@@ -251,6 +253,19 @@ static void notify_error(const char* msg) {
   notify_bytes(frame, 1 + msg_len);
 }
 
+static void notify_text_frame(uint8_t frame_type, const char* msg) {
+  const size_t max_len = 180;
+  const size_t msg_len = strnlen(msg, max_len);
+  uint8_t frame[1 + max_len];
+  frame[0] = frame_type;
+  memcpy(&frame[1], msg, msg_len);
+  notify_bytes(frame, 1 + msg_len);
+}
+
+static void notify_provision_response(const char* msg) {
+  notify_text_frame(FRAME_PROVISION_RESP, msg);
+}
+
 static bool notify_native_wire(const uint8_t* payload, size_t payload_len) {
   if (payload == nullptr || payload_len == 0) {
     return false;
@@ -282,6 +297,210 @@ static const char* fallback_reason_name(FallbackReasonCode code) {
     default:
       return "unknown";
   }
+}
+
+static bool parse_node_mode_name(const String& value, NativeNodeMode* mode) {
+  if (mode == nullptr) {
+    return false;
+  }
+  if (value == "ble_only") {
+    *mode = NATIVE_NODE_MODE_BLE_ONLY;
+    return true;
+  }
+  if (value == "tcp_client") {
+    *mode = NATIVE_NODE_MODE_TCP_CLIENT;
+    return true;
+  }
+  if (value == "tcp_server") {
+    *mode = NATIVE_NODE_MODE_TCP_SERVER;
+    return true;
+  }
+  return false;
+}
+
+static bool parse_capture_profile_name(const String& value, NodeCaptureProfile* profile) {
+  if (profile == nullptr) {
+    return false;
+  }
+  if (value == "thumbnail") {
+    *profile = NODE_CAPTURE_PROFILE_THUMBNAIL;
+    return true;
+  }
+  if (value == "balanced") {
+    *profile = NODE_CAPTURE_PROFILE_BALANCED;
+    return true;
+  }
+  if (value == "high") {
+    *profile = NODE_CAPTURE_PROFILE_HIGH;
+    return true;
+  }
+  if (value == "very_high") {
+    *profile = NODE_CAPTURE_PROFILE_VERY_HIGH;
+    return true;
+  }
+  return false;
+}
+
+static bool parse_bool_string(const String& value, bool* out) {
+  if (out == nullptr) {
+    return false;
+  }
+  if (value == "1" || value == "true" || value == "yes") {
+    *out = true;
+    return true;
+  }
+  if (value == "0" || value == "false" || value == "no") {
+    *out = false;
+    return true;
+  }
+  return false;
+}
+
+static String provisioning_status_text() {
+  String message = "ok";
+  message += " mode=";
+  message += node_runtime_config_mode_name(g_node_config);
+  message += " wifi_set=";
+  message += node_runtime_config_has_wifi(g_node_config) ? "yes" : "no";
+  message += " tcp_host=";
+  message += node_runtime_config_has_tcp_client_target(g_node_config) ? g_node_config.tcp_host : "<unset>";
+  message += " tcp_port=";
+  message += String(g_node_config.tcp_port);
+  message += " capture_profile=";
+  message += node_runtime_capture_profile_name(g_node_config);
+  message += " ble_recovery=";
+  message += g_node_config.ble_recovery_enabled ? "yes" : "no";
+  return message;
+}
+
+static bool apply_provisioning_set(const String& command_body, String* response) {
+  if (response == nullptr) {
+    return false;
+  }
+
+  NodeRuntimeConfig updated = g_node_config;
+  bool restart_required = false;
+  int cursor = 0;
+  while (cursor < command_body.length()) {
+    int line_end = command_body.indexOf('\n', cursor);
+    if (line_end < 0) {
+      line_end = command_body.length();
+    }
+    String line = command_body.substring(cursor, line_end);
+    line.trim();
+    cursor = line_end + 1;
+    if (line.isEmpty()) {
+      continue;
+    }
+    int eq = line.indexOf('=');
+    if (eq <= 0) {
+      *response = "error invalid_line";
+      return false;
+    }
+    String key = line.substring(0, eq);
+    String value = line.substring(eq + 1);
+    key.trim();
+    value.trim();
+
+    if (key == "mode") {
+      NativeNodeMode mode;
+      if (!parse_node_mode_name(value, &mode)) {
+        *response = "error invalid_mode";
+        return false;
+      }
+      updated.node_mode = mode;
+      restart_required = true;
+    } else if (key == "wifi_ssid") {
+      if (value.length() >= (int)sizeof(updated.wifi_ssid)) {
+        *response = "error wifi_ssid_too_long";
+        return false;
+      }
+      strlcpy(updated.wifi_ssid, value.c_str(), sizeof(updated.wifi_ssid));
+      restart_required = true;
+    } else if (key == "wifi_password") {
+      if (value.length() >= (int)sizeof(updated.wifi_password)) {
+        *response = "error wifi_password_too_long";
+        return false;
+      }
+      strlcpy(updated.wifi_password, value.c_str(), sizeof(updated.wifi_password));
+      restart_required = true;
+    } else if (key == "tcp_host") {
+      if (value.length() >= (int)sizeof(updated.tcp_host)) {
+        *response = "error tcp_host_too_long";
+        return false;
+      }
+      strlcpy(updated.tcp_host, value.c_str(), sizeof(updated.tcp_host));
+      restart_required = true;
+    } else if (key == "tcp_port") {
+      long port = value.toInt();
+      if (port <= 0 || port > 65535) {
+        *response = "error invalid_tcp_port";
+        return false;
+      }
+      updated.tcp_port = static_cast<uint16_t>(port);
+      restart_required = true;
+    } else if (key == "capture_profile") {
+      NodeCaptureProfile profile;
+      if (!parse_capture_profile_name(value, &profile)) {
+        *response = "error invalid_capture_profile";
+        return false;
+      }
+      updated.capture_profile = profile;
+    } else if (key == "ble_recovery") {
+      bool enabled = false;
+      if (!parse_bool_string(value, &enabled)) {
+        *response = "error invalid_ble_recovery";
+        return false;
+      }
+      updated.ble_recovery_enabled = enabled;
+    } else {
+      *response = "error unknown_key";
+      return false;
+    }
+  }
+
+  if (!node_runtime_config_save(updated)) {
+    *response = "error save_failed";
+    return false;
+  }
+  g_node_config = updated;
+  native_runtime_bridge_set_node_mode(g_node_config.node_mode);
+  native_runtime_bridge_set_network_provisioned(node_runtime_config_has_wifi(g_node_config));
+
+  *response = provisioning_status_text();
+  if (restart_required) {
+    *response += " restart_required=yes";
+  } else {
+    *response += " restart_required=no";
+  }
+  return true;
+}
+
+static void handle_provision_command(const String& command_text) {
+  String command = command_text;
+  command.trim();
+  if (command == "status" || command == "get") {
+    notify_provision_response(provisioning_status_text().c_str());
+    return;
+  }
+  if (command == "reboot") {
+    notify_provision_response("ok rebooting=yes");
+    delay(150);
+    ESP.restart();
+    return;
+  }
+  if (command.startsWith("set")) {
+    String body = command.substring(3);
+    body.trim();
+    String response;
+    if (apply_provisioning_set(body, &response)) {
+      notify_provision_response(response.c_str());
+    } else {
+      notify_provision_response(response.c_str());
+    }
+    return;
+  }
+  notify_provision_response("error unknown_command");
 }
 
 static void notify_chunk(uint16_t seq, uint16_t total, const uint8_t* payload, uint16_t payload_len) {
@@ -364,6 +583,17 @@ class CaptureWriteCallbacks : public BLECharacteristicCallbacks {
                       (unsigned)(value.size() - 1),
                       native_runtime_bridge_backend_name());
       }
+      return;
+    }
+
+    if (frame_type == FRAME_PROVISION_CMD) {
+      if (value.size() <= 1) {
+        g_diag.drop_invalid++;
+        notify_provision_response("error empty_command");
+        return;
+      }
+      String command(reinterpret_cast<const char*>(value.data() + 1), value.size() - 1);
+      handle_provision_command(command);
       return;
     }
 

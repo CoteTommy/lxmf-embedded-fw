@@ -20,6 +20,8 @@ Implements the frame ids expected by current host bridge:
 - `0x07` ERROR (device -> host notify)
 - `0x08` NACK (host -> device write)
 - `0x23` NATIVE_WIRE (bidirectional runtime frame wrapper)
+- `0x24` PROVISION_CMD (host -> device write)
+- `0x25` PROVISION_RESP (device -> host notify)
 
 CHUNK wire layout:
 
@@ -45,6 +47,31 @@ Temporary helper control frames:
 
 These are convenience triggers for bring-up. The intended steady-state transport is `0x23`
 carrying encoded native runtime frames directly.
+
+Provisioning command format:
+
+- byte `0` = `0x24`
+- bytes `1..` = UTF-8 command text
+
+Supported provisioning commands:
+
+- `status`
+- `get`
+- `set\nkey=value\nkey=value`
+- `reboot`
+
+Supported `set` keys:
+
+- `mode=ble_only|tcp_client|tcp_server`
+- `wifi_ssid=<ssid>`
+- `wifi_password=<password>`
+- `tcp_host=<host-or-ip>`
+- `tcp_port=<1..65535>`
+- `capture_profile=thumbnail|balanced|high|very_high`
+- `ble_recovery=0|1`
+
+Successful `set` responses return the current config summary plus `restart_required=yes|no`.
+Mode/Wi-Fi/TCP changes currently require a reboot to take effect cleanly.
 
 ## UUID defaults
 
@@ -188,6 +215,22 @@ TCP capture requests can also override the profile per request without reflashin
 - `balanced`
 - `high`
 - `very_high`
+
+Provisioning examples:
+
+```text
+status
+```
+
+```text
+set
+mode=tcp_client
+wifi_ssid=YourSSID
+wifi_password=YourPassword
+tcp_host=192.168.1.57
+tcp_port=7443
+capture_profile=high
+```
 
 ## Next steps
 
