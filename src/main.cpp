@@ -43,6 +43,7 @@ static const size_t BLE_NATIVE_WIRE_MAX_BYTES = 180;
 static BLECharacteristic* g_notify = nullptr;
 static volatile bool g_capture_requested = false;
 static NodeRuntimeConfig g_node_config;
+static NativeNodeMode g_effective_node_mode = NATIVE_NODE_MODE_BLE_ONLY;
 
 static uint32_t g_transfer_id = 1;
 static bool g_connected = false;
@@ -888,20 +889,29 @@ void setup() {
   lxmf_log_init(&Serial);
   lxmf_log_eventf("node", "boot", "boot");
   node_runtime_config_load(&g_node_config);
+  g_effective_node_mode = g_node_config.node_mode;
+  if (g_effective_node_mode != NATIVE_NODE_MODE_BLE_ONLY
+      && !node_runtime_config_has_wifi(g_node_config)) {
+    g_effective_node_mode = NATIVE_NODE_MODE_BLE_ONLY;
+    lxmf_log_eventf("node",
+                    "provisioning_fallback",
+                    "forcing ble_only because stored network config is missing");
+  }
   native_runtime_bridge_init(&Serial);
-  native_runtime_bridge_set_node_mode(g_node_config.node_mode);
+  native_runtime_bridge_set_node_mode(g_effective_node_mode);
   native_runtime_bridge_set_network_provisioned(node_runtime_config_has_wifi(g_node_config));
   native_runtime_bridge_set_ble_recovery_active(false);
   tcp_node_client_init(&Serial, &g_node_config);
   lxmf_log_eventf("node",
                   "config",
-                  "config mode=%s wifi=%s tcp_host=%s tcp_port=%u",
+                  "config mode=%s effective_mode=%s wifi=%s tcp_host=%s tcp_port=%u",
                   node_runtime_config_mode_name(g_node_config),
+                  native_runtime_bridge_mode_name(),
                   node_runtime_config_has_wifi(g_node_config) ? "set" : "unset",
                   node_runtime_config_has_tcp_client_target(g_node_config) ? g_node_config.tcp_host : "<unset>",
                   g_node_config.tcp_port);
 
-  g_ble_transport_enabled = (g_node_config.node_mode == NATIVE_NODE_MODE_BLE_ONLY);
+  g_ble_transport_enabled = (g_effective_node_mode == NATIVE_NODE_MODE_BLE_ONLY);
   if (g_ble_transport_enabled) {
     BLEDevice::init(DEVICE_NAME);
     BLEServer* server = BLEDevice::createServer();
